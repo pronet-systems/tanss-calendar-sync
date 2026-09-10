@@ -1,0 +1,40 @@
+# Konfiguration und Geheimnisse — gehören niemals ins Repository
+config.json
+config.partial.json
+*.pem
+*.pfx
+*.key
+*.crt
+token
+token.bak
+.env
+
+# Laufzeitdaten
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editoren und Betriebssysteme
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

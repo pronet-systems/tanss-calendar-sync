@@ -1,0 +1,87 @@
+{
+  "version": 1,
+
+  "tanss": {
+    "base_url": "https://tanss.example.com/backend",
+    "token_ref": "file:/etc/tanss-calendar-sync/token",
+    "token_owner_employee_id": 1,
+    "rotate_before_days": 60,
+    "own_company_id": 0,
+    "verify_tls": true,
+    "timeout_seconds": 30
+  },
+
+  "microsoft": {
+    "tenant_id": "00000000-0000-0000-0000-000000000000",
+    "client_id": "00000000-0000-0000-0000-000000000000",
+    "auth": {
+      "mode": "certificate",
+      "certificate_path": "/etc/tanss-calendar-sync/graph.pem",
+      "thumbprint": "",
+      "client_secret_ref": null
+    },
+    "timezone": "W. Europe Standard Time",
+    "timeout_seconds": 30
+  },
+
+  "sync": {
+    "mode": "poll",
+    "interval_seconds": 120,
+    "window_days_past": 14,
+    "window_days_future": 180,
+    "conflict_winner": "tanss",
+    "echo_suppression_seconds": 30,
+    "company_suffix_in_subject": true,
+    "travel_time_as_separate_events": true,
+    "sync_absences": true,
+    "ignore_show_as_free": true,
+    "ignore_all_day": true,
+    "dry_run": false
+  },
+
+  "safety": {
+    "max_deletes_per_run": 10,
+    "max_delete_ratio": 0.2,
+    "deletion_requires_event": true,
+    "backup_retention_days": 90
+  },
+
+  "user_discovery": {
+    "mode": "map_and_enable",
+    "interval_minutes": 60,
+    "strict_matching": true,
+    "auto_disable_on_removal": true,
+    "mailbox_domains": ["example.com"]
+  },
+
+  "webhook": {
+    "enabled": false,
+    "bind": "127.0.0.1",
+    "port": 8787,
+    "path_token": "",
+    "callback_base_url": ""
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "text",
+    "file": "/var/log/tanss-calendar-sync/sync.log",
+    "rotate_mb": 20,
+    "keep_files": 10,
+    "audit_retention_days": 365,
+    "operational_retention_days": 30,
+    "redact_content": false,
+    "log_http": false
+  },
+
+  "users": [
+    {
+      "tanss_employee_id": 1,
+      "tanss_email": "vorname.nachname@example.com",
+      "mailbox": "vorname.nachname@example.com",
+      "enabled": true,
+      "direction": "both",
+      "activated_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

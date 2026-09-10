@@ -1,0 +1,57 @@
+[Unit]
+Description=TANSS Calendar Sync — bidirektionaler Terminabgleich TANSS <-> Microsoft 365
+Documentation=https://github.com/pronet-systems/tanss-calendar-sync
+# network-online.target statt network.target: der Dienst braucht beim Start
+# tatsaechlich erreichbare Netzwerkziele, nicht nur ein konfiguriertes Interface.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tanss-sync
+Group=tanss-sync
+
+WorkingDirectory=/opt/tanss-calendar-sync
+ExecStart=/opt/tanss-calendar-sync/.venv/bin/tanss-sync run --config /etc/tanss-calendar-sync/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Neustart in jedem Fall, auch nach sauberem Beenden mit Fehlercode.
+Restart=always
+RestartSec=15
+# Bei Dauerfehlern nicht endlos im Sekundentakt neu starten.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Sauberes Herunterfahren: laufender Sync-Durchlauf darf zu Ende gehen.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Logs gehen an journald (journalctl -u tanss-calendar-sync).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tanss-calendar-sync
+
+# --- Absicherung ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+# Nur diese Pfade sind beschreibbar.
+ReadWritePaths=/var/lib/tanss-calendar-sync /var/log/tanss-calendar-sync
+# Das Token-Verzeichnis muss beschreibbar sein, weil der Dienst sein
+# TANSS-Token selbsttaetig erneuert und ersetzt.
+ReadWritePaths=/etc/tanss-calendar-sync
+
+[Install]
+WantedBy=multi-user.target
