@@ -7,7 +7,8 @@
     "rotate_before_days": 60,
     "own_company_id": 0,
     "verify_tls": true,
-    "timeout_seconds": 30
+    "timeout_seconds": 30,
+    "token_duration_days": 90
   },
   "microsoft": {
     "tenant_id": "00000000-0000-0000-0000-000000000000",
@@ -33,21 +34,26 @@
     "sync_absences": true,
     "ignore_show_as_free": true,
     "ignore_all_day": true,
-    "dry_run": false
+    "dry_run": false,
+    "rebase_margin_days": 30,
+    "lease_ttl_seconds": 300,
+    "ticket_pattern": "#([0-9]{4,})"
   },
   "push": {
-    "enabled": false,
     "bind": "0.0.0.0",
     "port": 8843,
-    "callback_base_url": "https://sync.intern:8843/hook",
+    "callback_base_url": "https://sync.intern/hook",
     "path_token_ref": "file:/etc/tanss-calendar-sync/webhook-token"
   },
   "safety": {
+    "alert_after_failed_runs": 5,
+    "emergency_ack_after_minutes": 60,
     "max_deletes_per_run": 10,
     "max_delete_ratio": 0.2,
-    "deletion_requires_event": true,
-    "backup_retention_days": 90,
-    "deletion_grace_seconds": 90
+    "max_creates_per_rebase": 25,
+    "deletion_requires_probe": true,
+    "deletion_grace_seconds": 90,
+    "backup_retention_days": 90
   },
   "user_discovery": {
     "mode": "map_and_enable",
@@ -56,7 +62,13 @@
     "auto_disable_on_removal": true,
     "mailbox_domains": [
       "example.com"
-    ]
+    ],
+    "default_direction": "both"
+  },
+  "defaults": {
+    "service_location": "OFFICE",
+    "support_type_id": 0,
+    "internal": true
   },
   "logging": {
     "level": "info",
