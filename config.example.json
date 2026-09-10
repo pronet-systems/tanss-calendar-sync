@@ -1,6 +1,5 @@
 {
   "version": 1,
-
   "tanss": {
     "base_url": "https://tanss.example.com/backend",
     "token_ref": "file:/etc/tanss-calendar-sync/token",
@@ -10,7 +9,6 @@
     "verify_tls": true,
     "timeout_seconds": 30
   },
-
   "microsoft": {
     "tenant_id": "00000000-0000-0000-0000-000000000000",
     "client_id": "00000000-0000-0000-0000-000000000000",
@@ -23,7 +21,6 @@
     "timezone": "W. Europe Standard Time",
     "timeout_seconds": 30
   },
-
   "sync": {
     "mode": "poll",
     "interval_seconds": 120,
@@ -38,30 +35,29 @@
     "ignore_all_day": true,
     "dry_run": false
   },
-
+  "push": {
+    "enabled": false,
+    "bind": "0.0.0.0",
+    "port": 8843,
+    "callback_base_url": "https://sync.intern:8843/hook",
+    "path_token_ref": "file:/etc/tanss-calendar-sync/webhook-token"
+  },
   "safety": {
     "max_deletes_per_run": 10,
     "max_delete_ratio": 0.2,
     "deletion_requires_event": true,
-    "backup_retention_days": 90
+    "backup_retention_days": 90,
+    "deletion_grace_seconds": 90
   },
-
   "user_discovery": {
     "mode": "map_and_enable",
     "interval_minutes": 60,
     "strict_matching": true,
     "auto_disable_on_removal": true,
-    "mailbox_domains": ["example.com"]
+    "mailbox_domains": [
+      "example.com"
+    ]
   },
-
-  "webhook": {
-    "enabled": false,
-    "bind": "127.0.0.1",
-    "port": 8787,
-    "path_token": "",
-    "callback_base_url": ""
-  },
-
   "logging": {
     "level": "info",
     "format": "text",
@@ -73,7 +69,6 @@
     "redact_content": false,
     "log_http": false
   },
-
   "users": [
     {
       "tanss_employee_id": 1,
