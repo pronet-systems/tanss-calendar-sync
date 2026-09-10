@@ -94,7 +94,9 @@ Mitarbeiters — und umgekehrt. Änderungen und Löschungen werden in beide Rich
 **In Microsoft 365**
 
 - Eine App-Registrierung in Microsoft Entra ID
-- Die Anwendungsberechtigung `Calendars.ReadWrite` mit Administratorzustimmung
+- Zwei Anwendungsberechtigungen mit Administratorzustimmung:
+  `Calendars.ReadWrite` für die Kalender und `User.Read.All` für die Zuordnung von
+  Mitarbeitern zu Postfächern
 - Ein Zertifikat oder Client-Secret für die App
 
 ---
@@ -173,9 +175,20 @@ Microsoft 365. Beide Kalender bleiben so, wie sie sind.
    Ein Kontotyp „Nur Konten in diesem Organisationsverzeichnis" genügt, eine Redirect-URI
    wird nicht benötigt. Notieren Sie **Anwendungs-ID (Client)** und **Verzeichnis-ID (Mandant)**.
 
-2. **Berechtigung vergeben** — unter *API-Berechtigungen* → *Microsoft Graph* →
-   **Anwendungsberechtigungen** → `Calendars.ReadWrite`. Anschließend
-   **Administratorzustimmung erteilen**.
+2. **Berechtigungen vergeben** — unter *API-Berechtigungen* → *Microsoft Graph* →
+   **Anwendungsberechtigungen**:
+
+   | Berechtigung | Wofür |
+   |---|---|
+   | `Calendars.ReadWrite` | Termine lesen und schreiben |
+   | `User.Read.All` | Postfächer zu TANSS-Mitarbeitern auflösen, auch über Alias-Adressen |
+
+   Anschließend **Administratorzustimmung erteilen**.
+
+   > `User.Read.All` wird nur für die automatische Zuordnung benötigt. Wer alle Postfächer
+   > von Hand in der Konfiguration hinterlegt und `user_discovery.mode` auf `off` setzt,
+   > kommt mit `Calendars.ReadWrite` allein aus. Ohne `proxyAddresses` — also ohne
+   > Zuordnung über Alias-Adressen — genügt auch das schmalere `User.ReadBasic.All`.
 
 3. **Zertifikat hinterlegen** — unter *Zertifikate & Geheimnisse*. Ein Zertifikat ist einem
    Client-Secret vorzuziehen, weil es nicht nach zwölf oder 24 Monaten stillschweigend
@@ -192,8 +205,8 @@ Microsoft 365. Beide Kalender bleiben so, wie sie sind.
    Laden Sie `graph.crt` in der App-Registrierung hoch und tragen Sie den angezeigten
    Fingerabdruck in die Konfiguration ein.
 
-4. **Zugriff einschränken** — `Calendars.ReadWrite` als Anwendungsberechtigung gilt zunächst
-   für **alle** Postfächer des Mandanten. Beschränken Sie den Zugriff auf die Postfächer,
+4. **Kalenderzugriff einschränken** — `Calendars.ReadWrite` als Anwendungsberechtigung gilt
+   zunächst für **alle** Postfächer des Mandanten. Beschränken Sie den Zugriff auf die Postfächer,
    die tatsächlich synchronisiert werden sollen. In Exchange Online geschieht das über
    *RBAC for Applications*:
 
