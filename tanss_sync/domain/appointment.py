@@ -258,6 +258,12 @@ class Appointment:
         Es können auch nur eine oder gar keine Fahrt entstehen — „zwei" ist nicht
         garantiert.
         """
+        if not self.kind.syncs_to_outlook:
+            # Eine Fahrt ist die Projektion ihres Haupttermins. Geht der nicht nach
+            # Outlook - eine getaetigte Leistung tut das nie -, dann sie auch nicht.
+            # Sonst stehen Anfahrt und Abfahrt im Kalender und zwischen ihnen fehlt
+            # der Termin, zu dem sie gehoeren.
+            return [self]
         if self.service_location is not ServiceLocation.CUSTOMER or not self.travel.has_any():
             return [self]
         if not self.start or not self.end:
