@@ -97,6 +97,7 @@ class PushConfig(_Base):
 class SafetyConfig(_Base):
     alert_after_failed_runs: int = 5
     emergency_ack_after_minutes: int = 60
+    max_creates_per_run: int = 10
     max_deletes_per_run: int = 10
     max_delete_ratio: float = 0.2
     max_creates_per_rebase: int = 25

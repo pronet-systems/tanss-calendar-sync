@@ -77,6 +77,8 @@ class ChangeSet:
 
     actions: list[SyncAction] = field(default_factory=list)
     skipped: list[tuple[Appointment, str]] = field(default_factory=list)
+    # Paare, fuer die nur die Ausgangsmarke nachgezogen wird - ohne zu schreiben.
+    baselines: list[tuple[object, object]] = field(default_factory=list)
 
     def deletions(self) -> list[SyncAction]:
         return [a for a in self.actions if a.operation.is_destructive]

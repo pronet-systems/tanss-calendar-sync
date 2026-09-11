@@ -146,6 +146,81 @@ def ack(config: ConfigOpt = None) -> None:
                       "[bold]tanss-sync sync --once --allow-bulk-delete[/bold].")
 
 
+# ---------------------------------------------------------------------- Abgleich
+
+@app.command("sync")
+def sync_cmd(
+    config: ConfigOpt = None,
+    once: Annotated[bool, typer.Option("--once", help="Ein Durchlauf statt Dauerbetrieb")] = True,
+    dry_run: DryRun = False,
+    allow_bulk_delete: Annotated[bool, typer.Option(
+        "--allow-bulk-delete",
+        help="Einen ausgelösten Not-Aus freigeben und die Löschungen ausführen")] = False,
+    allow_bulk_create: Annotated[bool, typer.Option(
+        "--allow-bulk-create",
+        help="Viele Neuanlagen in einem Lauf zulassen (erster Abgleich)")] = False,
+) -> None:
+    """Einen Abgleich durchführen. Mit --dry-run lesend, sonst schreibend."""
+    from .sync.engine import SyncEngine
+
+    with _runtime(config) as rt:
+        if rt.graph is None:
+            err.print("[red]Ohne Microsoft-Zugang ist kein Abgleich möglich.[/red]")
+            raise typer.Exit(2)
+
+        def run() -> None:
+            engine = SyncEngine(rt.config, rt.tanss, rt.graph, rt.state)
+            report = engine.run_once(dry_run=dry_run,
+                                     allow_bulk_delete=allow_bulk_delete,
+                                     allow_bulk_create=allow_bulk_create)
+
+            if dry_run:
+                console.print("[bold]Probelauf — es wurde nichts geschrieben.[/bold]")
+                console.print()
+            _print_actions(rt.state)
+            console.print()
+            console.print(f"[bold]{report.summary()}[/bold]")
+            if report.aborted_reason:
+                console.print(f"[red]{report.aborted_reason}[/red]")
+                flag = ("--allow-bulk-create" if "Neuanlagen" in report.aborted_reason
+                        else "--allow-bulk-delete")
+                console.print(f"Freigeben mit: [bold]tanss-sync sync --once {flag}[/bold]")
+                console.print("[dim]Vorher unbedingt mit --dry-run ansehen.[/dim]")
+                raise typer.Exit(2)
+
+        if dry_run:
+            run()
+        else:
+            with write_lock(rt.config, "sync"):
+                run()
+
+
+def _print_actions(state, limit: int = 60) -> None:
+    """Zeigt, was der letzte Lauf getan hätte oder getan hat."""
+    rows = state.connect().execute(
+        "SELECT operation, outcome, reason, mailbox, uid, changed_fields "
+        "FROM audit WHERE run_id = (SELECT MAX(run_id) FROM audit) "
+        "AND side != 'system' ORDER BY id LIMIT ?", (limit,)).fetchall()
+    if not rows:
+        console.print("[dim]Keine Änderungen.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Was")
+    table.add_column("Ergebnis")
+    table.add_column("Termin")
+    table.add_column("Begründung")
+    for row in rows:
+        style = {"ok": "green", "dry_run": "cyan", "failed": "red",
+                 "blocked": "yellow"}.get(row["outcome"], "")
+        uid = (row["uid"] or "")[:26]
+        fields = f" ({row['changed_fields']})" if row["changed_fields"] else ""
+        table.add_row(row["operation"],
+                      f"[{style}]{row['outcome']}[/{style}]" if style else row["outcome"],
+                      uid, (row["reason"] or "") + fields)
+    console.print(table)
+
+
 # ---------------------------------------------------------------------- Benutzer
 
 @users_app.command("list")
