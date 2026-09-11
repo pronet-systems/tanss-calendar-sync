@@ -119,7 +119,12 @@ class GraphClient:
 
     def _handle(self, response: httpx.Response) -> dict:
         status = response.status_code
-        if status == 204 or not response.content:
+
+        # Leerer Körper heißt nur bei Erfolg „nichts zurückzugeben". Bei einem
+        # Fehlerstatus ohne Körper — eine 401 vom Tokendienst, eine 502 vom
+        # Zwischenknoten — wäre ein leeres ``{}`` eine Falschaussage: Der Abgleich
+        # hielte das Postfach für leer und jeden gekoppelten Termin für gelöscht.
+        if 200 <= status < 300 and (status == 204 or not response.content):
             return {}
 
         try:

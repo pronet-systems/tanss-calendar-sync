@@ -129,8 +129,19 @@ class TanssClient:
     def _handle(self, response: httpx.Response, *, want_meta: bool) -> Any:
         status = response.status_code
 
-        if status == 204 or not response.content:
+        # Ein leerer Körper ist NUR bei Erfolg eine leere Antwort. Stand diese Prüfung
+        # vor der Statusauswertung, wäre eine leere 401, 403 oder 502 ein leerer
+        # Erfolg — und das ist der gefährlichste Fehler, den dieses Werkzeug machen
+        # kann: `get_support` meldete dann „nicht gefunden", `list_appointments`
+        # lieferte eine leere Liste, und ein abgelaufenes Token sähe aus wie ein
+        # gelöschter Terminbestand. Der Löschpfad nimmt genau das als Nachweis.
+        if 200 <= status < 300 and (status == 204 or not response.content):
             return ({}, {}) if want_meta else {}
+
+        if not response.content:
+            # Fehlerstatus ohne Körper - es gibt nichts zu lesen, aber sehr wohl
+            # etwas zu melden.
+            self._raise(status, None, "")
 
         try:
             payload = response.json()

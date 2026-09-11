@@ -10,7 +10,7 @@ import logging
 from datetime import UTC, datetime
 
 from .client import TANSS_X_PREFIX, TanssClient
-from .errors import TanssNotFound
+from .errors import TanssError, TanssNotFound
 from .models import (
     TRIGGER_TYPES,
     SupportPage,
@@ -94,17 +94,28 @@ class TanssRepository:
         )
 
     def get_support(self, support_id: int) -> TanssSupport | None:
-        """Einzelner Termin — ``None`` bei 404.
+        """Einzelner Termin — ``None`` **ausschließlich** bei 404.
 
-        Dieses ``None`` ist der Löschnachweis aus Invariante 2. Der Einzelabruf liefert
-        außerdem ``outlookReadOnly``, ``modified`` und ``dateCreated``, die in der Liste
-        fehlen.
+        Dieses ``None`` ist der Löschnachweis aus Invariante 2, und deshalb darf es auf
+        genau einem Weg entstehen: Der Server hat gezielt geantwortet, dass es das
+        Objekt nicht gibt. Eine leere Antwort mit Erfolgsstatus ist **kein** solcher
+        Nachweis — sie bedeutet, dass etwas anderes schiefgelaufen ist, und wird als
+        Fehler gemeldet statt als Löschung ausgelegt.
+
+        Der Einzelabruf liefert außerdem ``outlookReadOnly``, ``modified`` und
+        ``dateCreated``, die in der Liste fehlen.
         """
         try:
             payload = self.client.get(f"{TANSS_X_PREFIX}/supports/{support_id}")
         except TanssNotFound:
             return None
-        return TanssSupport.model_validate(payload) if payload else None
+
+        if not payload:
+            raise TanssError(
+                f"TANSS lieferte für Termin {support_id} eine leere Antwort mit "
+                "Erfolgsstatus. Das ist kein Löschnachweis — der Abgleich bricht hier "
+                "ab, statt den Termin für entfernt zu halten.")
+        return TanssSupport.model_validate(payload)
 
     def search_companies(self, query: str) -> list[TanssCompany]:
         content = self.client.put(f"{TANSS_X_PREFIX}/search",
