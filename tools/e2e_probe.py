@@ -29,6 +29,7 @@ Aufruf::
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import datetime as dt
 import sys
@@ -39,36 +40,39 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tanss_sync.config.store import ConfigStore
+from tanss_sync.runtime import open_runtime
 from tanss_sync.sync.engine import SyncEngine
 from tanss_sync.tanss.models import TanssSupportWrite
+from tanss_sync.util.timezone import _zone_of
 
 #: Steht im Betreff jedes erzeugten Termins. Daran wird aufgeräumt.
 MARKE = "SYNCPROBE"
 
 
-class Geländerbruch(RuntimeError):
+class Gelaenderbruch(RuntimeError):
     """Ein Schreibvorgang hätte eine der vier Grenzen überschritten."""
 
 
 # --------------------------------------------------------------------------- Geländer
 
-def _prüfe_grenzen(*, start: dt.datetime, ende: dt.datetime | None,
+def _pruefe_grenzen(*, start: dt.datetime, ende: dt.datetime | None,
                    teilnehmer: list | None, postfach: str, erlaubtes_postfach: str,
                    heute: dt.date, zone) -> None:
     """Vor **jedem** Schreibvorgang. Nicht einmal beim Start — hier."""
     if teilnehmer:
-        raise Geländerbruch(
+        raise Gelaenderbruch(
             "Ein Testtermin mit Teilnehmern würde Einladungsmails verschicken. "
             "Der Prüfstand legt niemals Termine mit Teilnehmern an.")
     if postfach != erlaubtes_postfach:
-        raise Geländerbruch(
+        raise Gelaenderbruch(
             f"Postfach {postfach} ist nicht das Testpostfach {erlaubtes_postfach}.")
     for zeitpunkt, was in ((start, "Beginn"), (ende, "Ende")):
         if zeitpunkt is None:
             continue
         tag = zeitpunkt.astimezone(zone).date()
         if tag != heute:
-            raise Geländerbruch(
+            raise Gelaenderbruch(
                 f"{was} liegt am {tag:%d.%m.%Y}, erlaubt ist nur heute ({heute:%d.%m.%Y}).")
 
 
@@ -87,6 +91,8 @@ class Welt:
     trocken: bool = False
     angelegt_tanss: list[int] = field(default_factory=list)
     angelegt_graph: list[str] = field(default_factory=list)
+    #: Was ein Szenario dem naechsten weitergibt - etwa die Kennung seines Termins.
+    merker: dict = field(default_factory=dict)
 
     # ---------------------------------------------------------------- Zeiten
 
@@ -101,7 +107,7 @@ class Welt:
                       ort: str = "OFFICE", anfahrt: int = 0, abfahrt: int = 0,
                       typ: str = "APPOINTMENT_FIX", text: str = "") -> int | None:
         ende = start + dt.timedelta(minutes=dauer)
-        _prüfe_grenzen(start=start, ende=ende, teilnehmer=None, postfach=self.postfach,
+        _pruefe_grenzen(start=start, ende=ende, teilnehmer=None, postfach=self.postfach,
                        erlaubtes_postfach=self.postfach, heute=self.heute, zone=self.zone)
         if self.trocken:
             return None
@@ -124,7 +130,7 @@ class Welt:
         self.angelegt_tanss.append(erzeugt.id)
         return erzeugt.id
 
-    def tanss_ändern(self, support_id: int, **felder) -> None:
+    def tanss_aendern(self, support_id: int, **felder) -> None:
         if self.trocken:
             return
         vorher = self.rt.tanss.get_support(support_id)
@@ -133,7 +139,7 @@ class Welt:
         write.meta_infos = dict(vorher.meta_infos or {})
         for name, wert in felder.items():
             if name == "start":
-                _prüfe_grenzen(start=wert, ende=None, teilnehmer=None,
+                _pruefe_grenzen(start=wert, ende=None, teilnehmer=None,
                                postfach=self.postfach, erlaubtes_postfach=self.postfach,
                                heute=self.heute, zone=self.zone)
                 write.date = int(wert.timestamp())
@@ -141,7 +147,7 @@ class Welt:
                 setattr(write, name, wert)
         self.rt.tanss.update_support(support_id, write)
 
-    def tanss_löschen(self, support_id: int) -> None:
+    def tanss_loeschen(self, support_id: int) -> None:
         if self.trocken:
             return
         # Beim Aufraeumen zaehlt nur das Ergebnis: Ein bereits entfernter Termin ist
@@ -160,10 +166,10 @@ class Welt:
     # ---------------------------------------------------------------- Outlook
 
     def graph_anlegen(self, *, titel: str, start: dt.datetime, dauer: int,
-                      zeigen_als: str = "busy", ganztägig: bool = False,
+                      zeigen_als: str = "busy", ganztaegig: bool = False,
                       text: str = "", ort: str = "") -> str | None:
         ende = start + dt.timedelta(minutes=dauer)
-        _prüfe_grenzen(start=start, ende=ende, teilnehmer=None, postfach=self.postfach,
+        _pruefe_grenzen(start=start, ende=ende, teilnehmer=None, postfach=self.postfach,
                        erlaubtes_postfach=self.postfach, heute=self.heute, zone=self.zone)
         if self.trocken:
             return None
@@ -174,7 +180,7 @@ class Welt:
             "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"},
             "end": {"dateTime": ende.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"},
             "showAs": zeigen_als,
-            "isAllDay": ganztägig,
+            "isAllDay": ganztaegig,
             "isReminderOn": False,
             # attendees fehlt hier bewusst und wird nie gesetzt.
         }
@@ -185,22 +191,22 @@ class Welt:
         self.angelegt_graph.append(erzeugt.id)
         return erzeugt.id
 
-    def graph_ändern(self, event_id: str, payload: dict) -> None:
+    def graph_aendern(self, event_id: str, payload: dict) -> None:
         if self.trocken:
             return
         if "attendees" in payload:
-            raise Geländerbruch("Teilnehmer werden nie geschrieben.")
+            raise Gelaenderbruch("Teilnehmer werden nie geschrieben.")
         for feld in ("start", "end"):
             if feld in payload:
                 roh = payload[feld]["dateTime"][:19]
                 zeitpunkt = dt.datetime.fromisoformat(roh).replace(tzinfo=dt.UTC)
-                _prüfe_grenzen(start=zeitpunkt, ende=None, teilnehmer=None,
+                _pruefe_grenzen(start=zeitpunkt, ende=None, teilnehmer=None,
                                postfach=self.postfach, erlaubtes_postfach=self.postfach,
                                heute=self.heute, zone=self.zone)
         self.rt.graph.client.patch(
             f"/users/{self.postfach}/events/{event_id}", payload, scope=self.postfach)
 
-    def graph_löschen(self, event_id: str) -> None:
+    def graph_loeschen(self, event_id: str) -> None:
         if self.trocken:
             return
         with contextlib.suppress(Exception):
@@ -234,7 +240,7 @@ class Welt:
         engine = SyncEngine(self.config, self.rt.tanss, self.rt.graph, self.rt.state)
         return engine.run_once()
 
-    def aufräumen(self) -> int:
+    def aufraeumen(self) -> int:
         """Entfernt alles, was den Prüfstand-Marker trägt — auf beiden Seiten.
 
         Gesucht wird über den Marker im Betreff, nicht über die Liste der in diesem
@@ -260,9 +266,9 @@ class Welt:
                 ereignisse.add(zeile["graph_event_id"])
 
         for ereignis_id in ereignisse:
-            self.graph_löschen(ereignis_id)
+            self.graph_loeschen(ereignis_id)
         for support_id in supports:
-            self.tanss_löschen(support_id)
+            self.tanss_loeschen(support_id)
 
         # Die Verknüpfungen der Testtermine ebenfalls — aber **nur** diese. Bliebe eine
         # stehen, hielte der nächste Lauf ihren Termin für gelöscht und trüge ihn in
@@ -316,3 +322,93 @@ def _ok(name: str) -> Befund:
 
 def _fehler(name: str, meldung: str) -> Befund:
     return Befund(name, False, meldung)
+
+
+# --------------------------------------------------------------------------- Ablauf
+
+def _welt_bauen(config_pfad: str, trocken: bool) -> tuple:
+    config = ConfigStore(config_pfad).load()
+    benutzer = [u for u in config.users if u.enabled]
+    if len(benutzer) != 1:
+        raise Gelaenderbruch(
+            f"Der Pruefstand arbeitet mit genau EINEM freigeschalteten Benutzer, "
+            f"gefunden: {len(benutzer)}. Sonst schreibt ein Szenario in fremde Kalender.")
+    if config.sync.dry_run and not trocken:
+        raise Gelaenderbruch(
+            "In der Konfiguration steht dry_run. Dann schreibt der Abgleich nichts, "
+            "und jedes Szenario meldet falsche Befunde.")
+
+    zone = _zone_of(config.microsoft.timezone)
+    laufzeit = open_runtime(config_pfad)
+    rt = laufzeit.__enter__()
+    welt = Welt(rt=rt, config=config, postfach=benutzer[0].mailbox,
+                employee_id=benutzer[0].tanss_employee_id, zone=zone,
+                heute=dt.datetime.now(zone).date(), trocken=trocken)
+    return welt, laufzeit
+
+
+def main(argv: list[str] | None = None) -> int:
+    zerleger = argparse.ArgumentParser(description="Ende-zu-Ende-Pruefstand")
+    zerleger.add_argument("--config", required=True)
+    zerleger.add_argument("--block", action="append", default=None,
+                          help="0 oder 1; mehrfach angebbar. Ohne Angabe: alle")
+    zerleger.add_argument("--wirklich", action="store_true",
+                          help="Ohne diese Angabe wird nichts geschrieben")
+    args = zerleger.parse_args(argv)
+
+    import e2e_szenarien as sz
+
+    bloecke = {"0": sz.BLOCK_0, "1": sz.BLOCK_1}
+    gewaehlt = args.block or sorted(bloecke)
+    szenarien = [s for b in gewaehlt for s in bloecke.get(b, [])]
+
+    welt, laufzeit = _welt_bauen(args.config, trocken=not args.wirklich)
+    print(f"Postfach   : {welt.postfach}")
+    print(f"Mitarbeiter: {welt.employee_id}")
+    print(f"Tag        : {welt.heute:%d.%m.%Y}")
+    print(f"Fenster    : {welt.config.sync.window_days_past} Tage zurueck bis "
+          f"{welt.config.sync.window_days_future} voraus")
+    print(f"Modus      : {'PROBELAUF - es wird nichts geschrieben' if welt.trocken else 'SCHREIBEND'}")
+    print()
+
+    if welt.trocken:
+        for nummer, name, _ in szenarien:
+            print(f"  {nummer}  {name}")
+        print(f"\n{len(szenarien)} Szenarien wuerden laufen. Mit --wirklich ausfuehren.")
+        laufzeit.__exit__(None, None, None)
+        return 0
+
+    alle: list[tuple[str, str, Befund]] = []
+    try:
+        vorreste = welt.aufraeumen()
+        if vorreste:
+            print(f"[Vorlauf] {vorreste} Reste eines frueheren Laufs entfernt\n")
+
+        for nummer, name, ablauf in szenarien:
+            print(f"--- {nummer}  {name}")
+            try:
+                befunde = ablauf(welt)
+            except Exception as exc:  # noqa: BLE001
+                befunde = [_fehler("Szenario lief durch", f"{type(exc).__name__}: {exc}")]
+            for b in befunde:
+                zeichen = "ok  " if b.bestanden else "FEHL"
+                print(f"    [{zeichen}] {b.name}" + (f" - {b.meldung}" if b.meldung else ""))
+                alle.append((nummer, name, b))
+            print()
+    finally:
+        entfernt = welt.aufraeumen()
+        print(f"[Aufraeumen] {entfernt} Testtermine entfernt")
+        laufzeit.__exit__(None, None, None)
+
+    fehler = [a for a in alle if not a[2].bestanden]
+    print()
+    print(f"{len(alle) - len(fehler)} von {len(alle)} Pruefungen bestanden")
+    if fehler:
+        print("\nNicht bestanden:")
+        for nummer, name, b in fehler:
+            print(f"  {nummer} {name}: {b.name} - {b.meldung}")
+    return 1 if fehler else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
