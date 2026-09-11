@@ -141,6 +141,10 @@ Drei Dinge sorgen dafür, dass der Dienst einen Reboot und Störungen übersteht
 3. **`Restart=always` mit `RestartSec=15`** — nach jedem Absturz oder Beenden startet der
    Dienst neu. `StartLimitBurst=5` innerhalb von 300 Sekunden verhindert dabei eine
    Endlosschleife bei dauerhaften Fehlern.
+4. **`RuntimeDirectory=tanss-calendar-sync`** — `ProtectSystem=strict` macht die gesamte
+   Dateisystemhierarchie schreibgeschützt, `/run` eingeschlossen. Ohne diesen Eintrag kann
+   der Dienst seine Sperrdatei nicht anlegen und stirbt nach jedem Reboot sofort wieder.
+   systemd legt das Verzeichnis beim Start selbst an und räumt es beim Stoppen ab.
 
 Prüfen lässt sich das so:
 
@@ -301,7 +305,7 @@ Geheimnisse stehen **nicht** in der Datei, sondern werden referenziert:
 | Parameter | Standard | Bedeutung |
 |---|---|---|
 | `base_url` | — | Basisadresse der TANSS-API, z. B. `https://tanss.example.com/backend`. Ohne abschließenden Schrägstrich. |
-| `token_ref` | `file:/etc/tanss-calendar-sync/token` | Verweis auf das API-Token. Der Dienst schreibt hierhin auch das erneuerte Token, die Datei muss also beschreibbar sein. |
+| `token_ref` | `file:/var/lib/tanss-calendar-sync/token` | Verweis auf das API-Token. Der Dienst schreibt hierhin auch das erneuerte Token. Beschreibbar sein muss dabei das **Verzeichnis**, nicht nur die Datei: Die Erneuerung legt eine temporäre Datei daneben und benennt sie um, damit nie ein halb geschriebenes Token entsteht. `/etc/tanss-calendar-sync` gehört `root` und ist für die Gruppe nur lesbar — ein Token dort lässt sich **nicht** erneuern, auch nicht mit `chmod 660` auf der Datei. |
 | `token_owner_employee_id` | — | Mitarbeiter-ID, unter der die Token-Erneuerung erfolgt. Dieser Mitarbeiter braucht das Recht zum Erzeugen von API-Tokens und muss aktiv bleiben. |
 | `rotate_before_days` | `60` | Ab welcher Restlaufzeit das Token erneuert wird. Der großzügige Vorlauf sorgt dafür, dass ein Problem lange vor dem Ablauf auffällt. |
 | `own_company_id` | wird ermittelt | Die eigene Firma. Termine ohne Kundenbezug werden ihr zugeordnet, da in TANSS jeder Termin eine Firma braucht. |
@@ -577,6 +581,12 @@ spätere Änderungen an diesem Termin werden nicht mehr übertragen. Das ist gew
 Termin hat stattgefunden und ist dokumentiert, der Kalendereintrag soll als Beleg stehen
 bleiben.
 
+War der Datensatz dagegen schon eine Leistung, als der Dienst ihn zum ersten Mal sah, so
+entsteht in Outlook gar nichts — **auch keine Fahrtblöcke**. Eine Fahrt ist die Projektion
+ihres Haupttermins; erscheint der nie im Kalender, gehört auch die Fahrt nicht dorthin.
+Andernfalls stünden Anfahrt und Abfahrt im Kalender und dazwischen fehlte der Termin, zu dem
+sie gehören.
+
 ### Warum steht der Firmenname in Klammern im Betreff?
 
 In TANSS gehört jeder Termin zu einem Kundendatensatz, in Outlook gibt es dieses Konzept
@@ -596,6 +606,18 @@ werden drei Einträge erzeugt: Anfahrt, Termin, Abfahrt.
 Wird der Termin in TANSS verschoben, wandern die Fahrten automatisch mit. Wird er in Outlook
 verschoben, müssen die Fahrteinträge von Hand mitverschoben werden. Über
 `sync.travel_time_as_separate_events` lässt sich die Funktion abschalten.
+
+**Warum die Abfahrt manchmal neben statt unter dem Termin steht:** Outlook ordnet seinen
+Kalender in Halbstundenfeldern. Endet ein Termin nicht auf einer solchen Grenze — etwa um
+12:45 —, so fällt die unmittelbar anschließende Abfahrt in dasselbe Feld wie der Termin, und
+Outlook stellt beide nebeneinander dar statt untereinander. Die Anfahrt ist davon nie
+betroffen, weil sie exakt mit dem Terminbeginn endet.
+
+Das ist eine reine Darstellungsfrage: Die Zeiten sind korrekt und stoßen lückenlos
+aneinander, nachprüfbar über die Termindetails. Wer die gestapelte Ansicht braucht, legt die
+Termine in TANSS auf halbe Stunden. Ein künstlicher Abstand zwischen Termin und Abfahrt hilft
+**nicht** — er verschiebt die Abfahrt nicht aus dem Rasterfeld heraus, verfälscht aber die
+Zeiten.
 
 ### Kann ich das Werkzeug parallel zu einer anderen Terminsynchronisation betreiben?
 
@@ -670,8 +692,19 @@ selbstständig, standardmäßig 60 Tage vor Ablauf, und prüft das neue Token, b
 übernimmt. Schlägt die Erneuerung fehl, bleibt das bisherige Token aktiv und der Dienst
 weist täglich darauf hin.
 
-Voraussetzung ist, dass der unter `token_owner_employee_id` hinterlegte Mitarbeiter aktiv
-bleibt und das Recht zum Erzeugen von API-Tokens behält.
+Zwei Voraussetzungen, die beide erfüllt sein müssen — jede für sich lässt die Erneuerung
+scheitern, und zwar erst Jahre später beim Ablauf des Tokens:
+
+* Der unter `token_owner_employee_id` hinterlegte Mitarbeiter bleibt aktiv und behält das
+  TANSS-Recht **„Administration: System API-Tokens für ext. Anbindungen und Schnittstellen
+  erzeugen"**. Fehlt es, antwortet die Ausstellungsroute mit HTTP 403. Es muss ein
+  Mitarbeiter der **eigenen** Firma sein: `ownState` liefert zu einem Kundenkontakt dessen
+  Firma als `defaultCompany`, und darauf liefen dann alle internen Termine.
+* Das Verzeichnis, in dem das Token liegt, ist für den Dienstbenutzer beschreibbar (siehe
+  `tanss.token_ref`).
+
+Beides prüft `tanss-sync doctor` — die Zeile „Token-Erneuerung" führt einen Trockentest
+gegen die echte Gegenstelle aus, der kein brauchbares Token erzeugt.
 
 ### Was passiert bei einem Neustart des Servers?
 
