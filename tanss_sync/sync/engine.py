@@ -329,10 +329,20 @@ class SyncEngine:
                                           transaction_id=str(uuid.uuid4()))
 
         # Die Kopplungs-UID entsteht ERST hier - vorher gibt es sie nicht.
-        uid = canonical_uid(created.ical_uid)
+        #
+        # Aber NUR fuer die Hauptzeile. Ein Fahrt-Block traegt in Outlook eine eigene
+        # UID; uebernaehme man sie in den Schluessel, liesse sich der Block im
+        # naechsten Lauf nicht wiederfinden: Aus TANSS entsteht er jedes Mal neu mit
+        # der UID des HAUPTTERMINS und seiner Rolle. Die Folge waere, dass er bei
+        # jedem Lauf erneut verknuepft wird - und die alte Verknuepfung ohne
+        # Gegenstueck dasteht und im Loeschpfad landet.
         appointment.graph_event_id = created.id
-        appointment.key = appointment.key.__class__(
-            user.mailbox, uid, appointment.key.sequence, appointment.key.travel_role)
+        uid = appointment.key.uid
+        if appointment.key.travel_role == "main":
+            uid = canonical_uid(created.ical_uid)
+            appointment.key = appointment.key.__class__(
+                user.mailbox, uid, appointment.key.sequence,
+                appointment.key.travel_role)
 
         if appointment.tanss_support_id:
             try:
@@ -375,9 +385,13 @@ class SyncEngine:
                         appointment.graph_event_id)
             return
 
-        uid = self.graph.uid_for(user.mailbox, existing)
-        appointment.key = appointment.key.__class__(
-            user.mailbox, uid, appointment.key.sequence, appointment.key.travel_role)
+        # Wie beim Anlegen: Der Schluessel einer Fahrt-Zeile bleibt an der UID des
+        # Haupttermins haengen, sonst findet der naechste Lauf sie nicht wieder.
+        uid = appointment.key.uid
+        if appointment.key.travel_role == "main":
+            uid = self.graph.uid_for(user.mailbox, existing)
+            appointment.key = appointment.key.__class__(
+                user.mailbox, uid, appointment.key.sequence, appointment.key.travel_role)
 
         if appointment.tanss_support_id:
             try:
@@ -636,6 +650,16 @@ class SyncEngine:
         self.state.set_link_state(action.appointment.key, "detached")
 
     def _write_back_coupling(self, appointment) -> None:
+        """Schreibt die Kopplungs-UID nach TANSS zurück — **nur für die Hauptzeile**.
+
+        Ein Fahrt-Block hat keine eigene Kopplung: Er ist eine Projektion und teilt
+        sich die Support-Kennung mit dem Haupttermin. Schriebe er zurück, landete
+        seine UID in der ``SYNC_GROUP`` des Haupttermins und überschriebe dessen
+        Kopplung. Am Kundensystem genau so passiert — der Haupttermin zeigte danach
+        auf den Anfahrt-Block, und der Abgleich verlor beide.
+        """
+        if appointment.key.travel_role != "main":
+            return
         if not appointment.tanss_support_id:
             return
         current = self.tanss.get_support(appointment.tanss_support_id)

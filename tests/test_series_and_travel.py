@@ -21,6 +21,7 @@ from tanss_sync.domain.appointment import (
     ServiceLocation,
     TravelTime,
 )
+from tanss_sync.domain.change import SyncOperation
 from tanss_sync.domain.identity import SyncDirection, SyncKey, UserMapping
 from tanss_sync.domain.uid import occurrence_sequence
 from tanss_sync.microsoft.mapper import GraphMapper
@@ -141,6 +142,118 @@ def test_fahrt_block_an_anderer_kante_wird_nicht_uebernommen() -> None:
     anfahrt = on_site().split_travel()[0]
     fremd = outlook_block("Anfahrt", START + dt.timedelta(hours=5), 30, "EV3")
     assert find_adoption(anfahrt, [fremd]) is None
+
+
+# ------------------------------------------- Fahrt-Blöcke an gekoppelten Terminen
+
+def gekoppelt() -> Appointment:
+    """Ein Vor-Ort-Termin, der in Outlook schon existiert — mit echter Kopplungs-UID."""
+    termin = on_site()
+    termin.key = SyncKey(MAILBOX, "040000008200E00074C5B7101A82E008-echt", -1, "main")
+    return termin
+
+
+def test_fahrt_block_entsteht_auch_an_einem_gekoppelten_termin() -> None:
+    """Am Kundensystem übersehen: Der Fahrt-Block teilt sich die UID des Haupttermins.
+
+    Die Regel „was bereits eine Kopplungs-UID trägt, wird nie angelegt" schützt vor
+    Duplikaten — für die Hauptzeile. Auf den Fahrt-Block angewandt verhindert sie, dass
+    je einer entsteht, sobald ein Termin einmal abgeglichen wurde. Und das ist der
+    Normalfall.
+    """
+    anfahrt = gekoppelt().split_travel()[0]
+    changes = build().reconcile_to_outlook(
+        [Pair(tanss=anfahrt, graph=None, link=None)], user(), created_filtered=True)
+    assert [a.operation for a in changes.actions] == [SyncOperation.CREATE]
+
+
+def test_haupttermin_ohne_gegenstueck_wird_weiterhin_nicht_angelegt() -> None:
+    """Die Regel selbst bleibt — sonst verdoppelt jeder unsichtbare Serientermin."""
+    changes = build().reconcile_to_outlook(
+        [Pair(tanss=gekoppelt(), graph=None, link=None)], user(), created_filtered=True)
+    assert changes.actions == []
+    assert "nicht sichtbar" in changes.skipped[0][1]
+
+
+def test_entfernter_fahrt_block_wird_wieder_angelegt() -> None:
+    """Er ist eine Projektion der Fahrtzeit in TANSS — und die steht noch."""
+    anfahrt = gekoppelt().split_travel()[0]
+    link = LinkRecord.for_new(anfahrt, user())
+    link.graph_event_id = "war-mal-da"
+    changes = build().reconcile_to_outlook(
+        [Pair(tanss=anfahrt, graph=None, link=link)], user(), created_filtered=True)
+    assert [a.operation for a in changes.actions] == [SyncOperation.CREATE]
+
+
+# ----------------------------------- Der Schlüssel eines Fahrt-Blocks bleibt stabil
+
+def test_fahrt_block_behaelt_die_uid_des_haupttermins() -> None:
+    """Er wird aus TANSS bei jedem Lauf mit **dieser** UID neu gebildet.
+
+    Übernähme man beim Anlegen die eigene UID des Outlook-Blocks in den Schlüssel,
+    fände ihn der nächste Lauf nicht wieder: Er verknüpfte ihn erneut, und die alte
+    Verknüpfung stünde ohne Gegenstück da — also im Löschpfad. Am Kundensystem
+    beobachtet: Der gerade angelegte Anfahrt-Block war beim Folgelauf zur Löschung
+    vorgemerkt.
+    """
+    termin = gekoppelt()
+    for teil in termin.split_travel():
+        assert teil.key.uid == termin.key.uid
+
+
+def test_alle_drei_zeilen_teilen_uid_und_kennung() -> None:
+    """Genau deshalb darf eine Fahrt-Zeile nie ihre Kopplung nach TANSS schreiben."""
+    teile = gekoppelt().split_travel()
+    assert len({t.key.uid for t in teile}) == 1
+    assert len({t.tanss_support_id for t in teile}) == 1
+    assert [t.key.travel_role for t in teile] == ["travel_to", "main", "travel_back"]
+
+
+class MitschreibenderSpeicher:
+    """Merkt sich, für welche Termine eine Kopplung zurückgeschrieben würde."""
+
+    def __init__(self) -> None:
+        self.geschrieben: list[int] = []
+
+    def get_support(self, support_id: int):
+        from tanss_sync.tanss.models import TanssSupport
+
+        return TanssSupport.model_validate({
+            "id": support_id, "date": 0, "duration": 0, "employeeId": 1,
+            "companyId": 0, "planningType": "APPOINTMENT_FIX"})
+
+    def update_support(self, support_id: int, write) -> None:
+        self.geschrieben.append(support_id)
+
+
+def test_nur_die_hauptzeile_schreibt_die_kopplung_zurueck() -> None:
+    """Sonst landet die UID des Fahrt-Blocks in der ``SYNC_GROUP`` des Haupttermins.
+
+    Am Kundensystem genau so passiert: Der Haupttermin zeigte danach auf den
+    Anfahrt-Block, und der Abgleich verlor die Paarung für beide.
+    """
+    from tanss_sync.config.models import AppConfig
+    from tanss_sync.sync.engine import SyncEngine
+
+    config = AppConfig.model_validate({
+        "tanss": {"base_url": "https://x/backend", "token_ref": "file:token",
+                  "token_owner_employee_id": 1},
+        "microsoft": {"tenant_id": "t", "client_id": "c",
+                      "auth": {"mode": "secret", "client_secret_ref": "file:s"}},
+    })
+    speicher = MitschreibenderSpeicher()
+    engine = SyncEngine.__new__(SyncEngine)
+    engine.config = config
+    engine.tanss = speicher
+    engine.tanss_mapper = __import__(
+        "tanss_sync.tanss.mapper", fromlist=["TanssMapper"]).TanssMapper(TimeConverter())
+
+    anfahrt, haupt, _ = gekoppelt().split_travel()
+    engine._write_back_coupling(anfahrt)
+    assert speicher.geschrieben == [], "eine Fahrt-Zeile darf nie zurückschreiben"
+
+    engine._write_back_coupling(haupt)
+    assert speicher.geschrieben == [4711]
 
 
 # ------------------------------------------------------------------ Serien

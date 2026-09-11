@@ -164,7 +164,16 @@ class Reconciler:
                         "Occurrence wird nicht angelegt"))
                     continue
 
-                if not is_pending(source.key.uid):
+                # ...aber **nur** für die Hauptzeile. Ein Fahrt-Block teilt sich die
+                # UID des Haupttermins, ohne je ein eigenes Gegenstück gehabt zu
+                # haben: Sein Fehlen heisst "noch nicht projiziert", nicht "wurde
+                # geloescht". Wer die Regel auch auf ihn anwendet, legt nie einen
+                # Fahrt-Block für einen gekoppelten Termin an - und genau das ist
+                # der Normalfall, sobald ein Termin einmal abgeglichen wurde.
+                #
+                # Auch ein in Outlook entfernter Fahrt-Block wird wieder angelegt:
+                # Er ist eine Projektion der Fahrtzeit in TANSS, und die steht noch.
+                if source.key.travel_role == "main" and not is_pending(source.key.uid):
                     changes.skipped.append((
                         source,
                         "bereits gekoppelt, Gegenstück derzeit nicht sichtbar — "
