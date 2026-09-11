@@ -17,7 +17,12 @@ from ..audit.redaction import Redactor
 from ..config.models import AppConfig
 from ..domain.change import Outcome, SyncAction, SyncOperation
 from ..domain.identity import SyncDirection, UserMapping
-from ..domain.uid import canonical_uid, pending_uid
+from ..domain.uid import (
+    PENDING_PREFIX,
+    canonical_uid,
+    occurrence_sequence,
+    pending_uid,
+)
 from ..microsoft.mapper import GraphMapper
 from ..microsoft.repository import GraphRepository
 from ..state.records import LinkRecord, RunReport
@@ -117,7 +122,8 @@ class SyncEngine:
         # --- TANSS lesen. Der Aktivierungsstichtag filtert SERVERSEITIG; ein
         # Nachfilter liefe ins Leere, weil dateCreated in der Liste fehlt.
         page = self.tanss.list_appointments(
-            user.tanss_employee_id, start, end, created_from=user.activated_at)
+            user.tanss_employee_id, start, end, created_from=user.activated_at,
+            with_recurring=self.config.sync.sync_series)
         tanss_appointments = self._map_tanss(page, user)
 
         # --- Graph lesen
@@ -127,10 +133,22 @@ class SyncEngine:
                 event, user.mailbox, self.graph.uid_for(user.mailbox, event),
                 own_domains=self.config.own_mail_domains)
             for event in events
-            # calendarView liefert nie einen seriesMaster; Occurrences und Ausnahmen
-            # kommen erst mit Phase 5.
-            if event.type == "singleInstance"
+            # calendarView liefert nie einen seriesMaster - die Serie ist bereits
+            # serverseitig expandiert. Ohne Serienabgleich bleibt deshalb nur der
+            # Einzeltermin uebrig; ein Filter auf "kein Master" wuerde nichts
+            # aussortieren und jede Occurrence als Einzeltermin behandeln.
+            if event.type == "singleInstance" or (
+                self.config.sync.sync_series and event.type in ("occurrence", "exception"))
         ]
+
+        # Eine Occurrence wird ueber ihren Zeitpunkt identifiziert - siehe
+        # occurrence_sequence. Die UID kommt bereits vom Master.
+        for appointment in graph_appointments:
+            if appointment.series_master_id and appointment.start:
+                appointment.is_occurrence = True
+                appointment.key = appointment.key.__class__(
+                    appointment.key.mailbox, appointment.key.uid,
+                    occurrence_sequence(appointment.start), appointment.key.travel_role)
 
         # Jeder Outlook-Termin gehoert dem Mitarbeiter dieses Postfachs. Ohne die
         # Zuordnung stuende im Protokoll kein Mitarbeiter, und ein Probelauf liesse
@@ -146,6 +164,15 @@ class SyncEngine:
         for appointment in tanss_appointments:
             appointment.subject = self.subject.to_outlook(
                 appointment, appointment.company_name)
+
+        # Fahrtzeiten sind in TANSS zwei Zahlen am Haupttermin, in Outlook eigene
+        # Bloecke. Die Zerlegung passiert NACH der Betreffbildung, damit "Anfahrt:"
+        # vor dem fertigen Titel steht.
+        if self.config.sync.travel_time_as_separate_events:
+            projected: list = []
+            for appointment in tanss_appointments:
+                projected.extend(appointment.split_travel())
+            tanss_appointments = projected
 
         links = self.state.links_for_user(user.tanss_employee_id)
         pairs = self.reconciler.pair(tanss_appointments, graph_appointments, links)
@@ -236,15 +263,14 @@ class SyncEngine:
     def _map_tanss(self, page, user: UserMapping) -> list:
         out = []
         for support in page.items:
-            uid, sequence = self.tanss_mapper.uid_of(support)
+            uid, _ = self.tanss_mapper.uid_of(support)
             if not uid:
                 # Noch nie gekoppelt - die UID entsteht erst beim Anlegen in Graph.
-                uid = pending_uid(support.id)
-            appointment = self.tanss_mapper.to_appointment(support, user.mailbox, uid)
-            if sequence >= 0:
-                appointment.key = appointment.key.__class__(
-                    user.mailbox, uid, sequence, "main")
-            out.append(appointment)
+                # Occurrences teilen sich die Kennung 0; als Ersatz dient deshalb die
+                # Serienregel, sonst fielen alle Occurrences zu einem Paar zusammen.
+                uid = (pending_uid(support.id) if not support.is_occurrence
+                       else f"{PENDING_PREFIX}rule-{support.recurrence_rule_id}")
+            out.append(self.tanss_mapper.to_appointment(support, user.mailbox, uid))
         return out
 
     def _apply(self, action: SyncAction, user: UserMapping, audit: AuditLogger,
@@ -410,14 +436,24 @@ class SyncEngine:
         now = datetime.now(UTC)
 
         if action.direction is SyncDirection.TANSS_TO_M365:
-            support_id = appointment.tanss_support_id
-            if not support_id:
-                link = self.state.get_link(appointment.key)
-                support_id = link.tanss_support_id if link else None
+            link = self.state.get_link(appointment.key)
+            support_id = appointment.tanss_support_id or (
+                link.tanss_support_id if link else None)
             if not support_id:
                 return None, "keine TANSS-Kennung zur Nachfrage vorhanden"
+
             if self.tanss.get_support(support_id) is not None:
+                # Der Haupttermin lebt. Fuer eine Fahrt-Zeile ist das trotzdem ein
+                # Nachweis - nur ein anderer: Die Fahrtzeit steht auf 0, der Block
+                # in Outlook ist damit eine Projektion ohne Vorlage. Fuer den
+                # Haupttermin selbst waere es dagegen keiner.
+                if link is not None and link.travel_role != "main":
+                    return DeletionEvidence(
+                        proof="source_removed", probed_at=now,
+                        object_id=str(support_id), trigger="travel_time_removed",
+                        source_support_id=support_id), ""
                 return None, "in TANSS weiterhin vorhanden — keine Löschung"
+
             return DeletionEvidence(
                 proof="tanss_404", probed_at=now, object_id=str(support_id),
                 trigger="tanss_deleted", http_status=404), ""

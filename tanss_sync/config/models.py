@@ -83,6 +83,7 @@ class SyncConfig(_Base):
     ignore_show_as_free: bool = True
     ignore_all_day: bool = True
     ticket_pattern: str = r"#([0-9]{4,})"
+    sync_series: bool = True
     infinite_series_end_years: int = 2
     # Wie weit rueckwirkend Bestandstermine uebernommen werden, wenn ein Benutzer
     # aktiviert wird. 0 bedeutet: nur was ab der Aktivierung entsteht.

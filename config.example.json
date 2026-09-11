@@ -31,6 +31,8 @@
     "echo_suppression_seconds": 30,
     "company_suffix_in_subject": true,
     "travel_time_as_separate_events": true,
+    "sync_series": true,
+    "infinite_series_end_years": 2,
     "adopt_existing_days": 90,
     "sync_absences": true,
     "ignore_show_as_free": true,

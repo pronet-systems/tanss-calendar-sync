@@ -68,6 +68,13 @@ class Reconciler:
         """
         by_key: dict[SyncKey, Pair] = {}
         links_by_key = {link.key: link for link in links}
+        # Die Termin-Kennung ist der belastbarste Wiedererkennungsweg: Sie ueberlebt
+        # eine Aenderung der UID, und fuer Fahrt-Termine ist sie der EINZIGE. Ein
+        # Fahrt-Block traegt in Outlook eine eigene UID, im Schluessel aber die des
+        # Haupttermins - ohne diesen Schritt fiele er nie auf sein Gegenstueck zurueck
+        # und wuerde bei jedem Lauf neu angelegt.
+        links_by_event = {link.graph_event_id: link for link in links
+                          if link.graph_event_id}
 
         for appointment in tanss:
             pair = by_key.setdefault(appointment.key, Pair())
@@ -75,6 +82,10 @@ class Reconciler:
             pair.link = links_by_key.get(appointment.key)
 
         for appointment in graph:
+            known = links_by_event.get(appointment.graph_event_id)
+            if known is not None:
+                appointment.key = known.key
+
             match = self._find_partner(appointment, by_key)
             if match is not None:
                 match.graph = appointment
@@ -142,6 +153,17 @@ class Reconciler:
                 # ausblendet, waere hier ein zweites Mal angelegt worden.
                 # Wurde er dagegen wirklich in Outlook geloescht, gehoert das dem
                 # Loeschpfad - nicht dem Anlagepfad.
+                if source.is_occurrence:
+                    # Eine einzelne Occurrence laesst sich in Outlook nicht anlegen -
+                    # dort gibt es sie nur als Teil ihrer Serie. Wer es doch versucht,
+                    # erzeugt fuer jeden Serientermin einen losen Einzeltermin: genau
+                    # die Duplikat-Lawine, die der Serienabgleich verhindern soll.
+                    changes.skipped.append((
+                        source,
+                        "Serientermin ohne Gegenstück in Outlook — eine einzelne "
+                        "Occurrence wird nicht angelegt"))
+                    continue
+
                 if not is_pending(source.key.uid):
                     changes.skipped.append((
                         source,
@@ -267,6 +289,15 @@ class Reconciler:
                 # Umgekehrt. Der Waechter lehnt das bei schreibgeschuetzten
                 # Kopplungen ohnehin ab - hier gar nicht erst vorschlagen, damit
                 # eine geloeschte Abwesenheit nie in die Naehe des Loeschpfads kommt.
+                if link.travel_role != "main" and not self.rules.config.travel_time_as_separate_events:
+                    # Die Projektion wurde abgeschaltet. Dann fehlt jede Fahrt-Zeile
+                    # in TANSS - das ist eine Einstellungsaenderung und kein Beleg,
+                    # dass die Fahrtzeit entfernt wurde. Bestehende Bloecke bleiben.
+                    changes.skipped.append((
+                        pair.tanss,
+                        "Fahrt-Termine sind abgeschaltet — bestehende Blöcke bleiben "
+                        "unangetastet"))
+                    continue
                 if link.is_write_protected_in_tanss or link.travel_role != "main":
                     continue
                 if not user.direction.allows_to_tanss():
@@ -348,12 +379,32 @@ class Reconciler:
                     changes.skipped.append((source, owned.reason))
                     continue
 
+                if source.is_occurrence:
+                    # Umgekehrt dasselbe: In TANSS haengt eine Occurrence an einer
+                    # Regel und hat nicht einmal eine eigene Kennung. Sie als
+                    # Einzeltermin zu schreiben, loeste sie aus ihrer Serie.
+                    changes.skipped.append((
+                        source,
+                        "Serientermin ohne Gegenstück in TANSS — eine einzelne "
+                        "Occurrence wird nicht angelegt"))
+                    continue
+
                 changes.actions.append(SyncAction(
                     direction=SyncDirection.M365_TO_TANSS,
                     operation=SyncOperation.CREATE,
                     appointment=source,
                     reason="in Outlook vorhanden, in TANSS nicht",
                 ))
+                continue
+
+            if pair.tanss.is_occurrence:
+                # Eine virtuelle Occurrence traegt in TANSS die Kennung 0 - es gibt
+                # keinen Datensatz, den ein Schreibvorgang treffen koennte. TANSS
+                # materialisiert erst beim Aendern eine Ausnahme, und das ueber diese
+                # Schnittstelle anzustossen ist nicht vorgesehen.
+                changes.skipped.append((
+                    source,
+                    "Serientermin: In TANSS existiert dafür kein eigener Datensatz"))
                 continue
 
             # Hat sich die Graph-Seite gegenueber IHRER eigenen Ausgangsmarke geaendert?

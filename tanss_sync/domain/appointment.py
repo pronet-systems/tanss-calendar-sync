@@ -186,6 +186,11 @@ class Appointment:
     break_start: datetime | None = None
     break_minutes: int = 0
     recurrence: RecurrencePattern | None = None
+    # Die TANSS-eigene Nummer der Occurrence. Getrennt vom Schluessel gefuehrt: Der
+    # Schluessel muss auf beiden Seiten gleich entstehen, diese Nummer gibt es nur in
+    # TANSS - sie wird dort aber beim Schreiben erwartet.
+    recurrence_sequence_id: int | None = None
+    is_occurrence: bool = False
     origin: Literal["TANSS", "OUTLOOK"] | None = None
     # Antwort des Postfachinhabers auf die Einladung. Nicht zu verwechseln mit der
     # Antwort einzelner Teilnehmer - massgeblich fuer SYNC_APPOINTMENT_STATUS ist
@@ -278,7 +283,11 @@ class Appointment:
             tanss_support_id=self.tanss_support_id,  # alle drei teilen sie sich!
             employee_id=self.employee_id,
             mailbox=self.mailbox,
-            subject=f"{label}: {self.subject}" if self.subject else label,
+            # Bewusst nur das Wort, ohne Termintitel und ohne Firmensuffix. Wohin die
+            # Fahrt geht, steht im Ortsfeld - und genau so heissen die Bloecke in
+            # gewachsenen Kalendern bereits. Ein abweichender Titel verhinderte, dass
+            # bestehende Bloecke wiedererkannt werden, und verdoppelte sie.
+            subject=label,
             # Ort und Adresse des Kunden gehoeren dazu - ohne Adresse ist ein
             # Fahrtblock im Kalender wertlos.
             location=self.location,

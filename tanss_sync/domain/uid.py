@@ -62,6 +62,23 @@ def is_orphan(uid: str | None) -> bool:
     return bool(uid) and uid.startswith(ORPHAN_PREFIX)
 
 
+def occurrence_sequence(start) -> int:
+    """Kennzeichnet eine Serien-Occurrence über **ihren Zeitpunkt**.
+
+    TANSS nummeriert Occurrences mit ``recurrenceRuleSequenceId``, Graph kennt keine
+    solche Nummer — jede Occurrence trägt dort nur ihre eigene Termin-Kennung. Über die
+    Systemgrenze hinweg bleibt als gemeinsames Merkmal allein der Beginn: Zwei
+    Occurrences derselben Serie zur selben Minute sind derselbe Termin.
+
+    Die TANSS-eigene Nummer bleibt davon unberührt — sie steht weiter am Termin und wird
+    verwendet, wo TANSS sie erwartet. Sie taugt nur nicht als gemeinsamer Schlüssel.
+
+    Gezählt wird in vollen Minuten seit der Epoche: TANSS rechnet ohnehin in Minuten,
+    und Sekundenbruchteile aus Graph dürfen kein zweites Paar aufmachen.
+    """
+    return int(start.timestamp()) // 60
+
+
 def canonical_uid(ical_uid: str | None) -> str:
     """Liefert die kanonische UID zu einer Graph-``iCalUId``.
 

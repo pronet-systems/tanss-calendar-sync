@@ -14,6 +14,9 @@ bestimmt sind:
 * **Termin:** Beginn, Ende und Betreff müssen übereinstimmen. Ein Termin ist auf die
   Minute festgelegt; zwei verschiedene Termine zur selben Minute mit demselben Titel
   gibt es praktisch nicht.
+* **Fahrt-Block:** Die angrenzende Terminkante und der Betreff genügen — eine Anfahrt
+  endet, wenn der Termin beginnt. Die Dauer ist dabei ausdrücklich kein Merkmal: Sie ist
+  genau das, was sich ändert, wenn jemand die Fahrtzeit korrigiert.
 * **Abwesenheit:** Kalendertag und Betreff genügen. TANSS führt Abwesenheiten je
   Kalendertag, und die Uhrzeit ist dabei eine Konvention, keine Aussage — welche
   Tagesspanne das schreibende System gewählt hat, ist nicht vorhersagbar. Ein Urlaubstag
@@ -95,6 +98,23 @@ def find_adoption(source: Appointment, candidates: list[Appointment], *,
         return Adoption(exact[0], "gleicher Beginn, gleiches Ende, gleicher Betreff")
     if exact:
         return None  # mehrdeutig - lieber gar nicht
+
+    if source.key.travel_role != "main":
+        # Ein Fahrt-Block ist durch seine **angrenzende Kante** bestimmt, nicht durch
+        # seine Dauer: Eine Anfahrt endet, wenn der Termin beginnt, eine Abfahrt
+        # beginnt, wenn er endet. Am Kundensystem gilt das ausnahmslos - die Dauern
+        # reichen dabei von 12 bis 30 Minuten. Wer auf die Dauer vergliche, legte
+        # jeden bestehenden Block ein zweites Mal an; eine geaenderte Fahrtzeit ist
+        # eine Aenderung am selben Block, kein anderer Block.
+        anchor = "end" if source.key.travel_role == "travel_to" else "start"
+        touching = [c for c in usable
+                    if _same_moment(getattr(c, anchor), getattr(source, anchor))]
+        if len(touching) != 1:
+            return None
+        return Adoption(
+            touching[0],
+            "bestehender Fahrt-Block an derselben Terminkante — übernommen, "
+            "die Fahrtzeit selbst wird angeglichen")
 
     if not source.kind.is_absence:
         return None

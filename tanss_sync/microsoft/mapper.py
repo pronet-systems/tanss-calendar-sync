@@ -98,8 +98,9 @@ class GraphMapper:
             "showAs": appointment.show_as,
             "isAllDay": appointment.all_day,
         }
-        if appointment.kind.is_absence:
-            # Ein Urlaubsantrag ueber zwei Wochen sind zehn Kalendereintraege. Mit der
+        if appointment.kind.is_absence or appointment.key.travel_role != "main":
+            # Ein Urlaubsantrag ueber zwei Wochen sind zehn Kalendereintraege, und zu
+            # jedem Vor-Ort-Termin kommen zwei Fahrt-Bloecke. Mit der
             # Outlook-Voreinstellung poppte fuer jeden davon eine Erinnerung auf.
             payload["isReminderOn"] = False
         if appointment.location:

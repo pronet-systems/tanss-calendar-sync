@@ -16,7 +16,12 @@ from ..domain.appointment import (
     TravelTime,
 )
 from ..domain.identity import SyncKey
-from ..domain.uid import NO_SEQUENCE, format_sync_group, parse_sync_group
+from ..domain.uid import (
+    NO_SEQUENCE,
+    format_sync_group,
+    occurrence_sequence,
+    parse_sync_group,
+)
 from ..util.html import HtmlText
 from ..util.timezone import TimeConverter
 from .models import LINK_TYPE_COMPANY, MetaKey, TanssPlanningType, TanssSupport, TanssSupportWrite
@@ -70,16 +75,19 @@ class TanssMapper:
         selbst wissen, weil er den Graph nicht kennt.
         """
         start = self.time.tanss_to_utc(support.date)
-        sequence = (support.recurrence_rule_sequence_id
-                    if support.recurrence_rule_sequence_id is not None else NO_SEQUENCE)
-
-        key = SyncKey(mailbox=mailbox, uid=uid, sequence=sequence)
+        # Eine Occurrence wird ueber ihren Zeitpunkt identifiziert, nicht ueber die
+        # TANSS-Nummer: Graph kennt keine solche Nummer.
+        key = SyncKey(
+            mailbox=mailbox, uid=uid,
+            sequence=occurrence_sequence(start) if support.is_occurrence else NO_SEQUENCE)
         kind = _KIND_BY_TYPE.get(support.planning_type, AppointmentKind.UNKNOWN)
 
         return Appointment(
             key=key,
             tanss_support_id=support.id or None,
             recurrence_rule_id=support.recurrence_rule_id,
+            recurrence_sequence_id=support.recurrence_rule_sequence_id,
+            is_occurrence=support.is_occurrence,
             subject=support.outlook_title.strip(),
             body=support.text,
             location=support.outlook_location,
@@ -163,9 +171,11 @@ class TanssMapper:
             write.duration_approach = appointment.travel.minutes_before
             write.duration_departure = appointment.travel.minutes_after
 
-        if appointment.key.sequence >= 0 and appointment.recurrence_rule_id:
+        # Die TANSS-eigene Nummer, nicht die Schluessel-Sequenz: Letztere ist ein
+        # Zeitstempel und haette in TANSS keine Bedeutung.
+        if appointment.recurrence_sequence_id is not None and appointment.recurrence_rule_id:
             write.recurrence_master_link_id = appointment.recurrence_rule_id
-            write.recurrence_rule_sequence_id = appointment.key.sequence
+            write.recurrence_rule_sequence_id = appointment.recurrence_sequence_id
 
         meta = self.build_meta(appointment, existing_meta=existing_meta,
                               graph_response=graph_response)
