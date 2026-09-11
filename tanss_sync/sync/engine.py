@@ -43,6 +43,22 @@ from .subject import SubjectFormatter
 log = logging.getLogger(__name__)
 
 
+def fahrten_nach_haupttermin(pairs) -> dict[str, list]:
+    """Fahrt-Blöcke, gruppiert nach der UID ihres Haupttermins.
+
+    Eine Fahrt-Zeile trägt im Schlüssel die UID des Haupttermins — darüber finden sich
+    beide wieder. Berücksichtigt wird nur, was in Outlook auch wirklich steht und noch
+    gekoppelt ist: Was dort fehlt, lässt sich nicht löschen, und eine bereits gelöste
+    Kopplung geht den Haupttermin nichts mehr an.
+    """
+    gruppen: dict[str, list] = {}
+    for paar in pairs:
+        if (paar.link is not None and paar.link.state == "linked"
+                and paar.link.travel_role != "main" and paar.graph is not None):
+            gruppen.setdefault(paar.link.uid, []).append(paar.graph)
+    return gruppen
+
+
 class SyncEngine:
     def __init__(self, config: AppConfig, tanss: TanssRepository,
                  graph: GraphRepository, state: StateStore) -> None:
@@ -202,6 +218,17 @@ class SyncEngine:
             entfernte_haupttermine=frozenset(
                 self.state.removed_main_uids(user.tanss_employee_id)))
         changes.skipped.extend(loeschungen.skipped)
+
+        # Fahrt-Bloecke je Haupttermin. Wird der Haupttermin in diesem Lauf
+        # nachweislich entfernt, gehen sie im selben Lauf mit: Sonst stuenden
+        # Anfahrt und Abfahrt eine Runde lang ohne ihren Termin im Kalender, und
+        # wer in dem Moment hinsieht, haelt den Abgleich fuer kaputt.
+        fahrten_je_haupttermin = fahrten_nach_haupttermin(pairs)
+
+        bereits_vorgesehen = {
+            (a.appointment.key, a.target_side.value) for a in loeschungen.actions
+        }
+
         for candidate in loeschungen.actions:
             proven, why = self._prove_deletion(candidate, user)
             if proven is None:
@@ -217,6 +244,26 @@ class SyncEngine:
                 continue
             self._evidence[id(candidate)] = proven
             changes.actions.append(candidate)
+
+            # Der Nachweis des Haupttermins traegt seine Fahrten mit: Sie sind
+            # dessen Projektion und haben keine eigene Vorlage in TANSS. Nur bei
+            # "tanss_404" - ein Haupttermin, der noch lebt, sagt ueber seine
+            # Fahrtzeiten nichts.
+            if (candidate.appointment.key.travel_role == "main"
+                    and proven.proof == "tanss_404"):
+                for fahrt in fahrten_je_haupttermin.get(
+                        candidate.appointment.key.uid, []):
+                    if (fahrt.key, candidate.target_side.value) in bereits_vorgesehen:
+                        continue
+                    bereits_vorgesehen.add((fahrt.key, candidate.target_side.value))
+                    mitgehend = SyncAction(
+                        direction=SyncDirection.TANSS_TO_M365,
+                        operation=SyncOperation.DELETE,
+                        appointment=fahrt,
+                        reason="Haupttermin in TANSS entfernt — die Fahrt geht mit",
+                    )
+                    self._evidence[id(mitgehend)] = proven
+                    changes.actions.append(mitgehend)
 
         for appointment, reason in changes.skipped:
             report.skipped += 1
