@@ -32,10 +32,19 @@ class GraphMapper:
         own_domains = own_domains or set()
         body_text = self.html.to_text(event.body.get("content", ""))
 
+        # "Noch nicht zugesagt" gibt es nur, wo es etwas zuzusagen GAB. Graph meldet
+        # bei einem selbst angelegten Termin ohne Eingeladene ebenfalls
+        # response == "none" - da hat aber niemand eine Einladung offen gelassen,
+        # es ist schlicht ein eigener Termin. Ohne diese Unterscheidung landet jeder
+        # in Outlook eingetragene Termin in TANSS als orangefarbene Terminvormerkung
+        # statt als fester Termin.
+        eingeladene = [a for a in event.attendees
+                       if (a.get("emailAddress", {}) or {}).get("address")]
+
         kind = AppointmentKind.FIXED
         if event.sensitivity == "private":
             kind = AppointmentKind.PRIVATE
-        elif event.response in ("none", "notResponded"):
+        elif eingeladene and event.response in ("none", "notResponded"):
             kind = AppointmentKind.TENTATIVE
 
         attendees = [
@@ -56,7 +65,10 @@ class GraphMapper:
 
         return Appointment(
             key=SyncKey(mailbox=mailbox, uid=uid, sequence=NO_SEQUENCE),
-            own_response=event.response,
+            # Ohne Eingeladene gibt es keine offene Antwort: Der Postfachinhaber ist
+            # der Veranstalter. Sonst stuende an einem selbst eingetragenen Termin in
+            # TANSS der Status "angefragt", obwohl nie jemand gefragt wurde.
+            own_response=event.response if eingeladene else "organizer",
             categories=list(event.categories),
             graph_event_id=event.id,
             series_master_id=event.series_master_id,
