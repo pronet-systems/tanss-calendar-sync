@@ -16,7 +16,7 @@
     "auth": {
       "mode": "certificate",
       "certificate_path": "/etc/tanss-calendar-sync/graph.pem",
-      "thumbprint": "",
+      "thumbprint": "0000000000000000000000000000000000000000",
       "client_secret_ref": null
     },
     "timezone": "W. Europe Standard Time",
@@ -31,6 +31,7 @@
     "echo_suppression_seconds": 30,
     "company_suffix_in_subject": true,
     "travel_time_as_separate_events": true,
+    "adopt_existing_days": 90,
     "sync_absences": true,
     "ignore_show_as_free": true,
     "ignore_all_day": true,

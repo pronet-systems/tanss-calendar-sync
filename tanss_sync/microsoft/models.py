@@ -57,6 +57,7 @@ class GraphEvent(BaseModel):
         """
         return value if isinstance(value, str) else ""
     subject: str = ""
+    categories: list[str] = Field(default_factory=list)
     body: dict = Field(default_factory=dict)
     body_preview: str = Field(alias="bodyPreview", default="")
     start: dict = Field(default_factory=dict)

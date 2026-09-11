@@ -343,6 +343,11 @@ class Reconciler:
                         "nicht angelegt, um kein Duplikat zu erzeugen"))
                     continue
 
+                owned = self.rules.already_owned_elsewhere(source)
+                if owned:
+                    changes.skipped.append((source, owned.reason))
+                    continue
+
                 changes.actions.append(SyncAction(
                     direction=SyncDirection.M365_TO_TANSS,
                     operation=SyncOperation.CREATE,

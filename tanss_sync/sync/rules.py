@@ -16,6 +16,9 @@ from ..state.records import LinkRecord
 
 _DAY_MINUTES = 24 * 60
 
+# Markierung des zuvor eingesetzten Produkts an jedem von ihm betreuten Termin.
+_FOREIGN_SYNC_CATEGORY = "TANSS:"
+
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
@@ -64,6 +67,28 @@ class SyncRules:
             return cutoff
 
         return YES
+
+    def already_owned_elsewhere(self, appointment: Appointment) -> Verdict:
+        """Betreut eine andere Terminsynchronisation diesen Termin bereits?
+
+        Das zuvor eingesetzte Produkt hängt an jeden von ihm abgeglichenen Termin eine
+        Outlook-Kategorie der Form ``TANSS:<Kennung>``. Sie steht an **allen** solchen
+        Terminen — auch an denen, die in Outlook entstanden und von dort nach TANSS
+        geschrieben wurden. Genau das macht sie aussagekräftig: Wo sie klebt, existiert
+        in TANSS bereits ein Datensatz.
+
+        Deshalb wird ein so markierter Termin nie **neu** angelegt. Geändert wird er
+        sehr wohl — dafür braucht es ein Paar, und ein Paar heißt, dass wir das
+        Gegenstück kennen.
+
+        Die Markierung verfällt nicht: Sie bleibt an den Altterminen kleben, und ihr
+        TANSS-Gegenstück bleibt es auch. Neue Termine tragen sie nicht.
+        """
+        for category in appointment.categories:
+            if str(category).startswith(_FOREIGN_SYNC_CATEGORY):
+                return Verdict(True, "wird bereits von einer anderen "
+                                     "Terminsynchronisation betreut")
+        return Verdict(False, "")
 
     # ------------------------------------------------------------ TANSS → Outlook
 

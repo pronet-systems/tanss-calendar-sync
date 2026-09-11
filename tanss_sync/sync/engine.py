@@ -132,6 +132,13 @@ class SyncEngine:
             if event.type == "singleInstance"
         ]
 
+        # Jeder Outlook-Termin gehoert dem Mitarbeiter dieses Postfachs. Ohne die
+        # Zuordnung stuende im Protokoll kein Mitarbeiter, und ein Probelauf liesse
+        # sich nicht nach Mitarbeitern auswerten.
+        for appointment in graph_appointments:
+            appointment.employee_id = appointment.employee_id or user.tanss_employee_id
+            appointment.mailbox = appointment.mailbox or user.mailbox
+
         # Betreff VOR dem Vergleich in die Outlook-Fassung bringen. Danach waere es
         # zu spaet: Der Reconciler haette dann den rohen TANSS-Titel gegen den bereits
         # mit "(Firma: ...)" versehenen Outlook-Titel gehalten - und jeden Termin fuer

@@ -321,10 +321,19 @@ def users_enable(
 
         entry.enabled = True
         if entry.activated_at is None:
-            from datetime import UTC, datetime
-            entry.activated_at = datetime.now(UTC)
-            console.print(f"Aktivierungszeitpunkt gesetzt: {entry.activated_at:%d.%m.%Y %H:%M}"
-                          " — ältere Termine bleiben unangetastet.")
+            from .sync.directory import activation_cutoff
+
+            days = rt.config.sync.adopt_existing_days
+            entry.activated_at = activation_cutoff(days)
+            if days > 0:
+                console.print(
+                    f"Aktivierungszeitpunkt gesetzt: {entry.activated_at:%d.%m.%Y %H:%M}"
+                    f" — der Bestand der letzten {days} Tage wird übernommen, "
+                    "alles Ältere bleibt unangetastet.")
+            else:
+                console.print(
+                    f"Aktivierungszeitpunkt gesetzt: {entry.activated_at:%d.%m.%Y %H:%M}"
+                    " — der gesamte Bestand bleibt unangetastet.")
         rt.store.save(rt.config)
         console.print(f"[green]{employee_id} aktiviert.[/green]")
 

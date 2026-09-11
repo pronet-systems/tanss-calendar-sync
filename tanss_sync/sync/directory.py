@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..config.models import AppConfig, UserConfig
 from ..domain.identity import MatchResult, MatchStage, SyncDirection, UserMapping
@@ -95,9 +95,7 @@ class UserDirectory:
             mailbox=match.mailbox or "",
             graph_user_id=match.graph_user_id,
             direction=policy.default_direction,
-            # Der Aktivierungszeitpunkt ist JETZT - damit bleiben alle Termine
-            # unangetastet, die vorher angelegt wurden.
-            activated_at=datetime.now(UTC),
+            activated_at=activation_cutoff(self.config.sync.adopt_existing_days),
             enabled=False,
         )
 
@@ -200,3 +198,21 @@ def mappings_from_config(config: AppConfig) -> list[UserMapping]:
         )
         for u in config.users
     ]
+
+
+def activation_cutoff(adopt_existing_days: int) -> datetime:
+    """Ab wann Termine eines neu aktivierten Benutzers abgeglichen werden.
+
+    Der Stichtag wirkt als serverseitiger Filter auf den **Anlagezeitpunkt**. Er
+    entscheidet damit über die Umstellung:
+
+    * ``0`` — nur was ab jetzt entsteht. Der Bestand bleibt unangetastet, wird aber
+      auch nicht mehr gepflegt: Eine spätere Änderung an einem älteren Termin bliebe
+      auf ihrer Seite liegen.
+    * größer ``0`` — der Bestand dieser Zeitspanne wird mitgenommen. Was auf der
+      Gegenseite bereits existiert, wird dabei übernommen statt verdoppelt; nur was
+      dort wirklich fehlt, entsteht neu.
+    """
+    if adopt_existing_days <= 0:
+        return datetime.now(UTC)
+    return datetime.now(UTC) - timedelta(days=adopt_existing_days)

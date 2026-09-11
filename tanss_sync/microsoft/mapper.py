@@ -57,6 +57,7 @@ class GraphMapper:
         return Appointment(
             key=SyncKey(mailbox=mailbox, uid=uid, sequence=NO_SEQUENCE),
             own_response=event.response,
+            categories=list(event.categories),
             graph_event_id=event.id,
             series_master_id=event.series_master_id,
             subject=event.subject,
@@ -97,6 +98,10 @@ class GraphMapper:
             "showAs": appointment.show_as,
             "isAllDay": appointment.all_day,
         }
+        if appointment.kind.is_absence:
+            # Ein Urlaubsantrag ueber zwei Wochen sind zehn Kalendereintraege. Mit der
+            # Outlook-Voreinstellung poppte fuer jeden davon eine Erinnerung auf.
+            payload["isReminderOn"] = False
         if appointment.location:
             payload["location"] = {"displayName": appointment.location}
         if appointment.kind is AppointmentKind.PRIVATE:

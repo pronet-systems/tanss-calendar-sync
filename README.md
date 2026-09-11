@@ -333,6 +333,7 @@ Geheimnisse stehen **nicht** in der Datei, sondern werden referenziert:
 | `echo_suppression_seconds` | `30` | Wie lange nach einem eigenen Schreibvorgang die Rückmeldung der Gegenseite als eigenes Echo verworfen wird. Verhindert Endlosschleifen. |
 | `company_suffix_in_subject` | `true` | Hängt den Firmennamen in Klammern an den Betreff im Outlook-Termin an, damit dort erkennbar ist, zu welchem Kunden er gehört. |
 | `travel_time_as_separate_events` | `true` | Erzeugt für An- und Abfahrt jeweils einen eigenen Outlook-Termin. Bei `false` werden Fahrtzeiten nicht übertragen. |
+| `adopt_existing_days` | `90` | Wie weit rückwirkend der Bestand übernommen wird, wenn ein Benutzer aktiviert wird. Termine, die auf der Gegenseite bereits existieren, werden dabei **übernommen statt verdoppelt**; nur was dort wirklich fehlt, wird angelegt. Bei `0` bleibt der gesamte Bestand unangetastet — er wird dann allerdings auch nicht mehr gepflegt: Eine spätere Änderung an einem älteren Termin bliebe auf ihrer Seite liegen. |
 | `sync_absences` | `true` | Überträgt Abwesenheiten nach Outlook. Immer nur in diese Richtung. |
 | `ignore_show_as_free` | `true` | Übergeht Outlook-Termine mit Status *Frei* / *Verfügbar*. Abschalten führt dazu, dass auch geblockte Zeiten in TANSS landen. |
 | `ignore_all_day` | `true` | Übergeht Outlook-Termine mit gesetztem Haken *Ganztägig*. |

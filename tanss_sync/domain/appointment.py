@@ -178,6 +178,9 @@ class Appointment:
 
     # Extras
     attendees: list[Attendee] = field(default_factory=list)
+    # Outlook-Kategorien. Interessant ist genau eine Sorte: die Markierung, die eine
+    # andere Terminsynchronisation an von ihr betreute Termine haengt.
+    categories: list[str] = field(default_factory=list)
     teams_url: str | None = None
     travel: TravelTime = field(default_factory=TravelTime)
     break_start: datetime | None = None
