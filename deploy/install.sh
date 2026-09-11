@@ -60,7 +60,10 @@ fi
 # --- 3. Verzeichnisse -------------------------------------------------------
 info "Lege Verzeichnisse an"
 install -d -m 0755 -o root            -g root            "${INSTALL_DIR}"
-install -d -m 0750 -o root            -g "${SERVICE_USER}" "${CONFIG_DIR}"
+# Gruppenschreibrecht ist noetig, nicht bequem: Der Dienst schreibt seine eigene
+# Konfiguration (users enable/disable, Verzeichnisabgleich), und er ersetzt sie dabei
+# ueber eine temporaere Datei daneben - das braucht Schreibrecht am VERZEICHNIS.
+install -d -m 0770 -o root            -g "${SERVICE_USER}" "${CONFIG_DIR}"
 install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${STATE_DIR}"
 install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${LOG_DIR}"
 
@@ -89,13 +92,27 @@ else
   warn "Nach der Installation einmalig ausfuehren:"
   warn "    sudo -u ${SERVICE_USER} ${VENV_DIR}/bin/tanss-sync setup --config ${CONFIG_DIR}/config.json"
 fi
-touch "${CONFIG_DIR}/token"
-chown root:"${SERVICE_USER}" "${CONFIG_DIR}/token"
-chmod 0640 "${CONFIG_DIR}/token"
+# Frueher entstand hier eine leere Token-Datei. Sie war irrefuehrend: Sie sah nach
+# einem hinterlegten Token aus, wo keines war, und zeigte auf ein Verzeichnis, in dem
+# sich das Token gar nicht erneuern laesst. Das Token entsteht bei der Einrichtung,
+# an dem Ort, den "tanss.token_ref" nennt.
 
 # --- 6. systemd -------------------------------------------------------------
 info "Installiere systemd-Unit"
 install -m 0644 "${SCRIPT_DIR}/${APP_NAME}.service" "/etc/systemd/system/${APP_NAME}.service"
+
+# Das Laufzeitverzeichnis fuer die Sperrdatei. Die Unit legt es per
+# RuntimeDirectory= beim Start selbst an; dieser Eintrag sorgt dafuer, dass es auch
+# dann schon existiert, wenn jemand einen Befehl von Hand ausfuehrt, bevor der Dienst
+# je gestartet wurde - sonst entstuende es als root und der Dienst kaeme nicht mehr
+# an seine eigene Sperrdatei.
+install -d -m 0755 /etc/tmpfiles.d
+install -m 0644 "${SCRIPT_DIR}/${APP_NAME}.tmpfiles.conf" "/etc/tmpfiles.d/${APP_NAME}.conf"
+# Kein "|| true": Scheitert das hier, fehlt spaeter das Laufzeitverzeichnis, und
+# der Dienst kaeme nach einem Reboot nicht hoch. Das gehoert gesagt, nicht verschluckt.
+systemd-tmpfiles --create "/etc/tmpfiles.d/${APP_NAME}.conf" \
+  || warn "systemd-tmpfiles meldete einen Fehler - /run/${APP_NAME} pruefen."
+
 systemctl daemon-reload
 
 # enable sorgt fuer den Start nach jedem Reboot.

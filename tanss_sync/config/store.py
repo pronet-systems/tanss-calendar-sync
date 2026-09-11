@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from ..util.dateien import atomar_ersetzen
 from .models import AppConfig
 
 CONFIG_MODE = 0o600
@@ -96,19 +95,11 @@ class ConfigStore:
 
     @staticmethod
     def _write(path: Path, payload: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-            os.chmod(path, CONFIG_MODE)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        def schreiben(handle) -> None:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+
+        atomar_ersetzen(path, schreiben, standard_mode=CONFIG_MODE)
 
 
 def _format_errors(exc: ValidationError) -> str:

@@ -54,6 +54,11 @@ SystemCallArchitectures=native
 # und raeumt es beim Stoppen wieder ab.
 RuntimeDirectory=tanss-calendar-sync
 RuntimeDirectoryMode=0750
+# Ohne "preserve" raeumt systemd das Verzeichnis beim Stoppen ab. Dann scheitert
+# jeder schreibende Befehl als Dienstbenutzer, denn /run gehoert root und niemand
+# sonst darf dort anlegen - genau in der Lage, in der man Befehle von Hand
+# ausfuehrt. Ein tmpfs ist es trotzdem: Nach einem Reboot ist es wieder leer.
+RuntimeDirectoryPreserve=yes
 
 # Nur diese Pfade sind beschreibbar.
 ReadWritePaths=/var/lib/tanss-calendar-sync /var/log/tanss-calendar-sync

@@ -89,7 +89,8 @@ def open_runtime(config_path: str | None = None, *, with_graph: bool = True):
 @contextmanager
 def write_lock(config: AppConfig, command: str):
     """Schreibende Befehle laufen nie parallel."""
-    with ProcessLock(config.state.lock_path, command):
+    with ProcessLock(config.state.lock_path, command,
+                     eigentuemer_wie=config.state.db_path):
         yield
 
 

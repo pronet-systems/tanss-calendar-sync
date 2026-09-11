@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from ..util.dateien import atomar_ersetzen
 
 _TOKEN_MODE = 0o600  # der Dienst schreibt selbst hinein
 
@@ -98,20 +99,20 @@ class SecretRef:
 
         path = Path(self.target).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
 
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(value.strip() + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-            os.chmod(path, _TOKEN_MODE)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        # Die Sicherung geht denselben Weg wie das Token selbst. Frueher war sie ein
+        # write_bytes() auf einen Pfad: Es folgte einem untergeschobenen Symlink,
+        # bekam nie Rechte gesetzt - eine Kopie des Tokens lag mit den Rechten der
+        # Umask daneben - und gehoerte nach einem root-Lauf root, woran die naechste
+        # Erneuerung als Dienstbenutzer still scheiterte.
+        if path.exists():
+            alt_inhalt = path.read_text(encoding="utf-8")
+            atomar_ersetzen(path.with_suffix(path.suffix + ".bak"),
+                            lambda h: h.write(alt_inhalt),
+                            standard_mode=_TOKEN_MODE)
+
+        atomar_ersetzen(path, lambda h: h.write(value.strip() + "\n"),
+                        standard_mode=_TOKEN_MODE)
 
     # ---------------------------------------------------------------- pruefen
 

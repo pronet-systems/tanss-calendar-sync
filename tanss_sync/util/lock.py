@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .dateien import verzeichnis_anlegen_wie
+
 
 class LockBusy(RuntimeError):
     pass
@@ -27,9 +29,14 @@ class LockInfo:
 class ProcessLock:
     """Lockdatei mit PID und Startzeit. Erkennt verwaiste Sperren."""
 
-    def __init__(self, path: str | Path, command: str = "") -> None:
+    def __init__(self, path: str | Path, command: str = "", *,
+                 eigentuemer_wie: str | Path | None = None) -> None:
         self.path = Path(path).expanduser()
         self.command = command
+        # Wem das Laufzeitverzeichnis gehoeren soll, falls es angelegt werden muss.
+        # Ueblicherweise die Zustandsdatenbank: Sie gehoert dem Dienstbenutzer, und
+        # die Sperrdatei ist ein Laufzeitartefakt desselben Dienstes.
+        self.eigentuemer_wie = Path(eigentuemer_wie).expanduser() if eigentuemer_wie else None
         self._acquired = False
 
     def read(self) -> LockInfo | None:
@@ -69,7 +76,10 @@ class ProcessLock:
             # Verwaiste Sperre - der Prozess lebt nicht mehr.
             self.path.unlink(missing_ok=True)
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.eigentuemer_wie is not None:
+            verzeichnis_anlegen_wie(self.path.parent, self.eigentuemer_wie, modus=0o750)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({
             "pid": os.getpid(),
             "since": datetime.now(UTC).isoformat(),
