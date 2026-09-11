@@ -125,6 +125,10 @@ class SyncEngine:
         page = self.tanss.list_appointments(
             user.tanss_employee_id, start, end, created_from=user.activated_at,
             with_recurring=self.config.sync.sync_series)
+        # Die Firmennamen kommen mit der Terminliste mit - ohne sie bliebe
+        # company_suffix_in_subject ein toter Schalter: company_name waere immer
+        # None und das "(Firma: ...)"-Suffix entstuende nie.
+        self.tanss_mapper.company_names = _firmennamen(page.linked_entities)
         tanss_appointments = self._map_tanss(page, user)
 
         # --- Graph lesen
@@ -681,6 +685,26 @@ class SyncEngine:
         now = datetime.now(UTC)
         return (now - timedelta(days=self.config.sync.window_days_past),
                 now + timedelta(days=self.config.sync.window_days_future))
+
+
+def _firmennamen(linked_entities: dict) -> dict[int, str]:
+    """Firmenkennung auf Namen, aus den mitgelieferten Bezugsdaten.
+
+    Nur die **erste Zeile**: TANSS fuehrt in diesem Feld mehrzeilige Anschriften
+    ("Sabel & Werneke oHG
+Erich Sabel"). Unveraendert uebernommen stuende der
+    Zeilenumbruch mitten im Outlook-Betreff.
+    """
+    namen: dict[int, str] = {}
+    for kennung, eintrag in (linked_entities or {}).get("companies", {}).items():
+        name = (eintrag or {}).get("name") or ""
+        erste = name.splitlines()[0].strip() if name else ""
+        if erste:
+            try:
+                namen[int(kennung)] = erste
+            except (TypeError, ValueError):
+                continue
+    return namen
 
 
 def _bump(report: RunReport, operation: SyncOperation) -> None:
