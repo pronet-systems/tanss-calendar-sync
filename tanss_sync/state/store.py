@@ -97,6 +97,21 @@ class StateStore:
         """
         link.assert_consistent()
         data = link.to_row()
+
+        # Ein Outlook-Termin gehoert genau einer Verknuepfung (idx_links_event).
+        # Beim Anlegen traegt die Zeile zunaechst eine Platzhalter-UID
+        # ("pending:<support_id>"), denn die echte iCalUId kennt erst der Server.
+        # Sobald sie bekannt ist, wechselt der Primaerschluessel - ON CONFLICT
+        # greift dann nicht mehr und das INSERT liefe in den zweiten Index.
+        # Die alte Zeile beschreibt denselben Termin und weicht deshalb.
+        if data.get("graph_event_id") is not None:
+            self.connect().execute(
+                "DELETE FROM links WHERE mailbox=? AND graph_event_id=? "
+                "AND NOT (uid=? AND sequence=? AND travel_role=?)",
+                (data["mailbox"], data["graph_event_id"],
+                 data["uid"], data["sequence"], data["travel_role"]),
+            )
+
         columns = ", ".join(data)
         placeholders = ", ".join("?" for _ in data)
         updates = ", ".join(f"{c}=excluded.{c}" for c in data
