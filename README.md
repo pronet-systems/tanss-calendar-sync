@@ -351,10 +351,11 @@ Unabhängig davon trägt weiterhin: Gelöscht wird ausschließlich, wenn der Ter
 
 | Parameter | Standard | Bedeutung |
 |---|---|---|
+| `max_creates_per_run` | `0` | Mehr Neuanlagen in einem Durchlauf brechen den Lauf ab. `0` (Standard) hebt die Grenze auf. |
 | `max_deletes_per_run` | `0` | Mehr Löschungen in einem Durchlauf brechen den Lauf ab, ohne etwas zu schreiben. `0` (Standard) hebt die Grenze auf. |
 | `max_delete_ratio` | `0` | Zusätzliche Grenze als Anteil der verknüpften Termine eines Benutzers. `0` (Standard) schaltet die Anteilsprüfung ab. |
 | `ratio_floor` | `20` | Ab wie vielen verknüpften Terminen die Anteilsgrenze überhaupt gilt. Darunter sagt ein Anteil nichts: Bei zwei gekoppelten Terminen sind zwei Löschungen zwangsläufig 100 %, bei einem einzigen ist es jede Löschung. Ein Alarm, der bei jedem gewöhnlichen Vorgang schrillt, wird abgeschaltet und schützt dann gar nichts mehr. |
-| `deletion_requires_probe` | `true` | Gelöscht wird nur bei einer tatsächlich beobachteten Löschung. Das bloße Fehlen in einer Antwort genügt nicht. Nicht abschalten. |
+| `deletion_requires_probe` | `true` | Gelöscht wird nur bei einer tatsächlich beobachteten Löschung. Das bloße Fehlen in einer Antwort genügt nicht. **Lässt sich nicht abschalten** — die Konfiguration wird sonst zurückgewiesen. |
 | `backup_retention_days` | `90` | Wie lange gelöschte Termine zur Wiederherstellung aufbewahrt werden. |
 
 ### `user_discovery`
@@ -618,15 +619,31 @@ TANSS, noch beim Verlust des Postfachs.
 
 ### Kann der Abgleich versehentlich viele Termine löschen?
 
-Dagegen gibt es mehrere Sicherungen. Gelöscht wird nur bei einer tatsächlich beobachteten
-Löschung — das bloße Fehlen eines Termins in einer Antwort genügt nicht. Fehlerhafte oder
-unvollständige Antworten brechen den Durchlauf ab, statt Schlüsse daraus zu ziehen. Und
-würde ein einzelner Durchlauf mehr als `max_deletes_per_run` Termine oder mehr als
-`max_delete_ratio` der Termine eines Benutzers löschen, bricht er ab, ohne etwas zu
-schreiben.
+Dagegen stehen vier Sicherungen, und sie greifen in dieser Reihenfolge.
 
-Zusätzlich wird jeder gelöschte Termin vorher gesichert und kann mit
-`tanss-sync restore` wiederhergestellt werden.
+**Der Nachweis am einzelnen Termin.** Gelöscht wird nur, wenn der Termin gezielt
+nachgefragt wurde und der Server dabei geantwortet hat, dass es ihn nicht mehr gibt
+(HTTP 404). Das bloße Fehlen in einer Liste genügt nie — das kann auch ein verschobenes
+Zeitfenster oder eine unvollständige Antwort sein. Ebenso wenig genügt eine leere
+Antwort: Eine abgewiesene oder gestörte Verbindung wird als Fehler gemeldet und bricht
+den Durchlauf ab, statt als „nicht mehr vorhanden" gelesen zu werden.
+
+**Die Karenzzeit.** Ein erkannter Löschvorgang wird zunächst nur vorgemerkt. Taucht der
+Termin innerhalb von `deletion_grace_seconds` wieder auf, wird die Vormerkung
+zurückgenommen. TANSS entfernt beim Wandeln einer Terminvormerkung in einen festen
+Termin kurzzeitig den alten Datensatz — ohne dieses Fenster wäre das ein Löschbefehl für
+einen Termin, der weiterlebt.
+
+**Die Sicherung.** Vor jeder Löschung wird der Termin vollständig gesichert.
+`tanss-sync deleted` zeigt, was wann und warum entfernt wurde, `tanss-sync restore` legt
+ihn wieder an — auf beiden Seiten.
+
+**Der Schreibschutz.** Abwesenheiten und Fahrt-Blöcke werden TANSS-seitig nie durch den
+Abgleich verändert oder gelöscht, egal was in Outlook mit ihnen geschieht.
+
+Zusätzlich lassen sich mit `max_deletes_per_run` und `max_delete_ratio` Mengengrenzen
+setzen, bei deren Überschreitung ein Durchlauf abbricht, ohne etwas zu schreiben. Diese
+Grenzen sind **ab Werk nicht aktiv** — siehe [`safety`](#safety).
 
 ### Braucht der Server eine öffentliche IP-Adresse?
 

@@ -51,6 +51,7 @@
   "safety": {
     "alert_after_failed_runs": 5,
     "emergency_ack_after_minutes": 60,
+    "max_creates_per_run": 0,
     "max_deletes_per_run": 0,
     "max_delete_ratio": 0,
     "ratio_floor": 20,
