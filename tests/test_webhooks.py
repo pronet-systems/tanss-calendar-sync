@@ -11,8 +11,11 @@ from __future__ import annotations
 from tanss_sync.sync.webhooks import WebhookManager, service_of
 from tanss_sync.tanss.models import TanssEventRule
 
-FREMD = "https://api.tanssx.de/api/v1/sync/appointments/tanss/webhook/"
-EIGEN = "https://sync.intern:8843/tanss/"
+#: Eine fremde Rueckrufadresse. Bewusst eine erfundene Adresse - welches
+#: Produkt in einer konkreten Installation meldet, geht das Repository
+#: nichts an; geprueft wird die Form, nicht der Anbieter.
+FREMD = "https://sync.example.org/api/v1/appointments/webhook/"
+EIGEN = "https://sync.example.net:8843/tanss/"
 
 
 def rule(rule_id: int, employee_id: int | None, url: str) -> TanssEventRule:

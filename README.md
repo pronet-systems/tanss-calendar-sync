@@ -239,7 +239,7 @@ Microsoft 365. Beide Kalender bleiben so, wie sie sind.
    eine externe Anbindung abrufen und hinterlegen:
 
    ```bash
-   sudo tee /etc/tanss-calendar-sync/token >/dev/null <<< 'Bearer eyJhbGci...'
+   sudo tee /etc/tanss-calendar-sync/token >/dev/null <<< 'Bearer <hier das Token einfuegen>'
    sudo chmod 640 /etc/tanss-calendar-sync/token
    sudo chown root:tanss-sync /etc/tanss-calendar-sync/token
    ```

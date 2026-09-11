@@ -45,7 +45,7 @@
   "push": {
     "bind": "0.0.0.0",
     "port": 8843,
-    "callback_base_url": "https://sync.intern/hook",
+    "callback_base_url": "https://sync.example.net/hook",
     "path_token_ref": "file:/etc/tanss-calendar-sync/webhook-token"
   },
   "safety": {
