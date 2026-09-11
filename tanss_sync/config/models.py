@@ -104,6 +104,9 @@ class SafetyConfig(_Base):
     max_creates_per_run: int = 10
     max_deletes_per_run: int = 10
     max_delete_ratio: float = 0.2
+    # Ab wie vielen Verknuepfungen der Anteilswert ueberhaupt gilt. Darunter sagt ein
+    # Anteil nichts: Bei zwei gekoppelten Terminen sind zwei Loeschungen 100 %.
+    ratio_floor: int = 20
     max_creates_per_rebase: int = 25
     deletion_requires_probe: bool = True
     deletion_grace_seconds: int = 90

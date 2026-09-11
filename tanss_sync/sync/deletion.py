@@ -147,8 +147,17 @@ class DeletionGuard:
         counted = self._count_operations(deletions)
         ratio = counted / linked_total if linked_total else 0.0
 
-        over_count = counted > self.policy.max_deletes_per_run
-        over_ratio = linked_total and ratio > self.policy.max_delete_ratio
+        over_count = (self.policy.max_deletes_per_run > 0
+                      and counted > self.policy.max_deletes_per_run)
+
+        # Der Anteilswert braucht eine Untergrenze, sonst ist er bei wenigen
+        # Verknuepfungen bedeutungslos: Bei zwei gekoppelten Terminen sind zwei
+        # Loeschungen zwangslaeufig 100 % - und ein Testbenutzer mit einer einzigen
+        # Kopplung loest bei jeder Loeschung aus. Ein Anteil sagt erst dann etwas,
+        # wenn genug Datensaetze da sind, von denen er ein Anteil sein kann.
+        ratio_applies = (self.policy.max_delete_ratio > 0
+                         and linked_total >= self.policy.ratio_floor)
+        over_ratio = ratio_applies and ratio > self.policy.max_delete_ratio
         if not (over_count or over_ratio):
             return BatchVerdict(True, "", counted, self.policy.max_deletes_per_run)
 

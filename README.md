@@ -347,9 +347,10 @@ Diese Einstellungen schützen vor Massenlöschungen. Die Standardwerte sind bewu
 
 | Parameter | Standard | Bedeutung |
 |---|---|---|
-| `max_deletes_per_run` | `10` | Mehr Löschungen in einem Durchlauf brechen den Lauf ab, ohne etwas zu schreiben. |
-| `max_delete_ratio` | `0.2` | Zusätzliche Grenze als Anteil der verknüpften Termine eines Benutzers. |
-| `deletion_requires_event` | `true` | Gelöscht wird nur bei einer tatsächlich beobachteten Löschung. Das bloße Fehlen in einer Antwort genügt nicht. Nicht abschalten. |
+| `max_deletes_per_run` | `10` | Mehr Löschungen in einem Durchlauf brechen den Lauf ab, ohne etwas zu schreiben. `0` hebt die Grenze auf. |
+| `max_delete_ratio` | `0.2` | Zusätzliche Grenze als Anteil der verknüpften Termine eines Benutzers. `0` schaltet die Anteilsprüfung ab. |
+| `ratio_floor` | `20` | Ab wie vielen verknüpften Terminen die Anteilsgrenze überhaupt gilt. Darunter sagt ein Anteil nichts: Bei zwei gekoppelten Terminen sind zwei Löschungen zwangsläufig 100 %, bei einem einzigen ist es jede Löschung. Ein Alarm, der bei jedem gewöhnlichen Vorgang schrillt, wird abgeschaltet und schützt dann gar nichts mehr. |
+| `deletion_requires_probe` | `true` | Gelöscht wird nur bei einer tatsächlich beobachteten Löschung. Das bloße Fehlen in einer Antwort genügt nicht. Nicht abschalten. |
 | `backup_retention_days` | `90` | Wie lange gelöschte Termine zur Wiederherstellung aufbewahrt werden. |
 
 ### `user_discovery`

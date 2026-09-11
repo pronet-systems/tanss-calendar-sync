@@ -53,6 +53,7 @@
     "emergency_ack_after_minutes": 60,
     "max_deletes_per_run": 10,
     "max_delete_ratio": 0.2,
+    "ratio_floor": 20,
     "max_creates_per_rebase": 25,
     "deletion_requires_probe": true,
     "deletion_grace_seconds": 90,
