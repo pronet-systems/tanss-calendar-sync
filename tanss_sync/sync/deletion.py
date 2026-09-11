@@ -215,7 +215,12 @@ class DeletionGuard:
     # ------------------------------------------------------------------ Sicherung
 
     def snapshot_before_delete(self, appointment, side: str, trigger: str) -> int:
-        """Nichts wird gelöscht, ohne vorher gesichert zu werden."""
+        """Nichts wird gelöscht, ohne vorher gesichert zu werden.
+
+        Gesichert wird **alles, was zum Wiederanlegen nötig ist** — nicht nur, was zum
+        Wiedererkennen reicht. Eine Sicherung, aus der sich der Termin nicht
+        rekonstruieren lässt, ist ein Protokolleintrag und kein Sicherungsnetz.
+        """
         payload = {
             "subject": appointment.subject,
             "body": appointment.body,
@@ -226,6 +231,17 @@ class DeletionGuard:
             "company_id": appointment.company_id,
             "ticket_id": appointment.ticket_id,
             "attendees": [a.email for a in appointment.attendees],
+            # Fuer die Wiederherstellung in TANSS
+            "employee_id": appointment.employee_id,
+            "duration_minutes": appointment.duration_minutes,
+            "service_location": str(appointment.service_location),
+            "is_internal": appointment.is_internal,
+            "support_type_id": appointment.support_type_id,
+            "show_as": appointment.show_as,
+            "uid": appointment.key.uid,
+            "sequence": appointment.key.sequence,
+            "origin": appointment.origin,
+            "teams_url": appointment.teams_url,
         }
         cur = self.state.connect().execute(
             "INSERT INTO deleted_backup (deleted_at, side, trigger, mailbox, uid, "

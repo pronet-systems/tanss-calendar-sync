@@ -722,12 +722,13 @@ def restore_cmd(backup_id: int, config: ConfigOpt = None,
             console.print("[bold]Probelauf[/bold] — nichts wurde angelegt.")
             return
 
-        if row["side"] != "graph":
-            err.print("[yellow]Nur in Outlook gelöschte Termine lassen sich hier "
-                      "wiederherstellen.[/yellow]")
-            err.print("Ein TANSS-Datensatz wird über den Papierkorb in TANSS "
-                      "zurückgeholt.")
-            raise typer.Exit(2)
+        if row["side"] == "tanss":
+            with write_lock(rt.config, "restore"):
+                created = _restore_in_tanss(rt, row, payload)
+            console.print(f"[green]In TANSS wiederhergestellt[/green] als {created.id}")
+            console.print("[dim]Die Kopplung wurde bewusst nicht wiederhergestellt — "
+                          "prüfen Sie den Termin, bevor der nächste Abgleich läuft.[/dim]")
+            return
 
         if rt.graph is None:
             err.print("[red]Ohne Microsoft-Zugang ist keine Wiederherstellung "
@@ -745,6 +746,78 @@ def restore_cmd(backup_id: int, config: ConfigOpt = None,
         console.print(f"[green]Wiederhergestellt[/green] als {created.id}")
         console.print("[dim]Die Kopplung wurde bewusst nicht wiederhergestellt — "
                       "prüfen Sie den Termin, bevor der nächste Abgleich läuft.[/dim]")
+
+
+def _restore_in_tanss(rt, row, payload: dict):
+    """Legt einen gelöschten TANSS-Termin aus seiner Sicherung neu an.
+
+    Bewusst **ohne** die Kopplungsdaten: Der Termin bekommt in TANSS eine neue Kennung,
+    und das alte Outlook-Gegenstück gibt es in aller Regel nicht mehr — es war ja dessen
+    Löschung, die hierher geführt hat. Eine mitgeschriebene ``SYNC_GROUP`` zeigte dann
+    auf ein Objekt, das nicht existiert.
+
+    Ältere Sicherungen enthalten noch nicht alle Felder. Was fehlt, kommt aus der
+    Verknüpfung oder aus den Vorgaben — lieber ein Termin mit Standardwerten als gar
+    keiner.
+    """
+    from datetime import datetime as _dt
+
+    from .domain.appointment import Appointment, AppointmentKind, ServiceLocation
+    from .domain.identity import SyncKey
+    from .tanss.mapper import TanssMapper
+    from .util.timezone import TimeConverter
+
+    link = rt.state.connect().execute(
+        "SELECT tanss_employee_id FROM links WHERE mailbox=? AND uid=? AND sequence=? "
+        "AND travel_role=?",
+        (row["mailbox"], row["uid"], row["sequence"], row["travel_role"])).fetchone()
+
+    employee_id = payload.get("employee_id") or (link["tanss_employee_id"] if link else 0)
+    if not employee_id:
+        err.print("[red]In der Sicherung steht kein Mitarbeiter.[/red] Ohne ihn lässt "
+                  "sich der Termin nicht zuordnen.")
+        raise typer.Exit(2)
+
+    start = _dt.fromisoformat(payload["start"])
+    end = _dt.fromisoformat(payload["end"]) if payload.get("end") else None
+
+    appointment = Appointment(
+        key=SyncKey(row["mailbox"] or "", "", row["sequence"] or -1,
+                    row["travel_role"] or "main"),
+        kind=_kind_from(payload.get("kind")),
+        subject=payload.get("subject") or "Wiederhergestellter Termin",
+        body=payload.get("body") or "",
+        location=payload.get("location") or "",
+        start=start,
+        end=end,
+        employee_id=employee_id,
+        company_id=payload.get("company_id"),
+        ticket_id=payload.get("ticket_id"),
+        support_type_id=payload.get("support_type_id"),
+        is_internal=payload.get("is_internal", True),
+    )
+    try:
+        appointment.service_location = ServiceLocation(payload["service_location"])
+    except (KeyError, ValueError):
+        appointment.service_location = ServiceLocation.OFFICE
+    if appointment.kind is AppointmentKind.UNKNOWN:
+        appointment.kind = AppointmentKind.FIXED
+
+    mapper = TanssMapper(TimeConverter(rt.config.microsoft.timezone))
+    write = mapper.to_write(appointment, for_update=False,
+                            own_company_id=rt.config.tanss.own_company_id)
+    # Keine Kopplungsdaten mitschreiben - siehe Beschreibung oben.
+    write.meta_infos = None
+    return rt.tanss.create_support(write, prevent_notification=True)
+
+
+def _kind_from(value: str | None):
+    from .domain.appointment import AppointmentKind
+
+    try:
+        return AppointmentKind(value)
+    except (TypeError, ValueError):
+        return AppointmentKind.FIXED
 
 
 @app.command("export-state")

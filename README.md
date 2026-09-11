@@ -343,12 +343,16 @@ Geheimnisse stehen **nicht** in der Datei, sondern werden referenziert:
 
 ### `safety`
 
-Diese Einstellungen schützen vor Massenlöschungen. Die Standardwerte sind bewusst streng.
+Diese Einstellungen schützen vor Massenlöschungen.
+
+Die **Mengenbremsen stehen ab Werk auf `0`, also aus**. Sie hielten den Dienst bei gewöhnlichen Vorgängen an — einem zurückgezogenen Sammelurlaub, einem ersten Abgleich gegen einen gewachsenen Kalender —, und ein Alarm, der im Normalbetrieb schrillt, wird abgeschaltet statt beachtet. Wer sie will, setzt einen Wert größer `0`.
+
+Unabhängig davon trägt weiterhin: Gelöscht wird ausschließlich, wenn der Termin gezielt nachgefragt wurde und dabei nachweislich nicht mehr existiert (HTTP 404) — das bloße Fehlen in einer Antwort genügt nie. Davor läuft eine Karenzzeit, und **vor jeder Löschung wird gesichert**; `tanss-sync deleted` zeigt die Sicherungen, `tanss-sync restore` holt einen Termin zurück, auf beiden Seiten. Abwesenheiten und Fahrt-Blöcke sind TANSS-seitig ohnehin schreibgeschützt.
 
 | Parameter | Standard | Bedeutung |
 |---|---|---|
-| `max_deletes_per_run` | `10` | Mehr Löschungen in einem Durchlauf brechen den Lauf ab, ohne etwas zu schreiben. `0` hebt die Grenze auf. |
-| `max_delete_ratio` | `0.2` | Zusätzliche Grenze als Anteil der verknüpften Termine eines Benutzers. `0` schaltet die Anteilsprüfung ab. |
+| `max_deletes_per_run` | `0` | Mehr Löschungen in einem Durchlauf brechen den Lauf ab, ohne etwas zu schreiben. `0` (Standard) hebt die Grenze auf. |
+| `max_delete_ratio` | `0` | Zusätzliche Grenze als Anteil der verknüpften Termine eines Benutzers. `0` (Standard) schaltet die Anteilsprüfung ab. |
 | `ratio_floor` | `20` | Ab wie vielen verknüpften Terminen die Anteilsgrenze überhaupt gilt. Darunter sagt ein Anteil nichts: Bei zwei gekoppelten Terminen sind zwei Löschungen zwangsläufig 100 %, bei einem einzigen ist es jede Löschung. Ein Alarm, der bei jedem gewöhnlichen Vorgang schrillt, wird abgeschaltet und schützt dann gar nichts mehr. |
 | `deletion_requires_probe` | `true` | Gelöscht wird nur bei einer tatsächlich beobachteten Löschung. Das bloße Fehlen in einer Antwort genügt nicht. Nicht abschalten. |
 | `backup_retention_days` | `90` | Wie lange gelöschte Termine zur Wiederherstellung aufbewahrt werden. |

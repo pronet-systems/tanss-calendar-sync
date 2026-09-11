@@ -223,7 +223,10 @@ class SyncEngine:
         if adoptions:
             log.info("%s bestehende Outlook-Termine werden übernommen statt angelegt",
                      len(adoptions))
-        if len(creates) > self.config.safety.max_creates_per_run and not allow_bulk_create:
+        # 0 bedeutet "keine Grenze". Ohne diese Pruefung hielte der Lauf schon bei der
+        # ersten Neuanlage an, statt gar nicht zu bremsen.
+        create_limit = self.config.safety.max_creates_per_run
+        if create_limit > 0 and len(creates) > create_limit and not allow_bulk_create:
             reason = (f"{len(creates)} Neuanlagen in einem Lauf "
                       f"(Grenze {self.config.safety.max_creates_per_run})")
             report.aborted_reason = f"{scope}: {reason}"

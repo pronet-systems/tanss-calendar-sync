@@ -101,9 +101,21 @@ class PushConfig(_Base):
 class SafetyConfig(_Base):
     alert_after_failed_runs: int = 5
     emergency_ack_after_minutes: int = 60
-    max_creates_per_run: int = 10
-    max_deletes_per_run: int = 10
-    max_delete_ratio: float = 0.2
+    # Die Mengenbremsen stehen standardmaessig auf 0, also aus. Sie hielten den Dienst
+    # bei gewoehnlichen Vorgaengen an - ein zurueckgezogener Sammelurlaub, ein erster
+    # Abgleich gegen einen gewachsenen Kalender -, und ein Alarm, der bei Normalbetrieb
+    # schrillt, wird abgeschaltet statt beachtet.
+    #
+    # Was unabhaengig davon weiter traegt: Geloescht wird nur auf HTTP 404 bei gezielter
+    # Einzelnachfrage, nie wegen eines Eintrags, der bloss in einer Liste fehlt. Davor
+    # laeuft eine Karenzzeit, und vor jeder Loeschung wird gesichert
+    # (tanss-sync deleted / restore). Abwesenheiten und Fahrt-Bloecke sind TANSS-seitig
+    # ohnehin schreibgeschuetzt.
+    #
+    # Wer die Bremsen will, setzt sie auf einen Wert groesser 0.
+    max_creates_per_run: int = 0
+    max_deletes_per_run: int = 0
+    max_delete_ratio: float = 0.0
     # Ab wie vielen Verknuepfungen der Anteilswert ueberhaupt gilt. Darunter sagt ein
     # Anteil nichts: Bei zwei gekoppelten Terminen sind zwei Loeschungen 100 %.
     ratio_floor: int = 20
