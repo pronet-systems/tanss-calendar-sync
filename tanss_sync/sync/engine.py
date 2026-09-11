@@ -254,10 +254,25 @@ class SyncEngine:
             self._apply(action, user, audit, report, dry_run=dry_run)
 
     def _store_baseline(self, pair, state, user: UserMapping) -> None:
-        """Merkt sich den Ist-Zustand beider Seiten, ohne etwas zu verändern."""
+        """Merkt sich den Ist-Zustand beider Seiten, ohne etwas zu verändern.
+
+        Eine **beendete** Kopplung wird dabei nicht wiederbelebt. Beim Abgleich werden
+        nur verknüpfte Zeilen geladen; eine entkoppelte fehlt also und das Paar sähe
+        aus, als würde es zum ersten Mal gesehen. Die Ausgangsmarke legte dann eine
+        neue, verknüpfte Zeile an — und der nächste Lauf entkoppelte erneut. Am
+        Kundensystem als Dauerschwingen beobachtet: entkoppelt, verknüpft, entkoppelt,
+        bei jedem zweiten Lauf eine Aktion, endlos.
+        """
         appointment = pair.tanss or pair.graph
         if appointment is None:
             return
+
+        beendet = self.state.get_link(appointment.key)
+        if pair.link is None and beendet is not None and beendet.state != "linked":
+            log.debug("Kopplung %s ist beendet (%s) — keine Ausgangsmarke",
+                      appointment.key, beendet.state)
+            return
+
         link = pair.link or LinkRecord.for_new(appointment, user)
         link.tanss_support_id = (pair.tanss.tanss_support_id if pair.tanss
                                  else link.tanss_support_id)

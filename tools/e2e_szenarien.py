@@ -154,14 +154,25 @@ def a2_zeiten(welt: Welt) -> list[Befund]:
     befunde = []
     schritte = [
         ("verschoben", {"start": welt.uhr(6, 15)}, {"start", "end"}),
-        # TANSS rundet die Dauer auf 15-Minuten-Schritte: Aus 10 wird 15, aus 20
-        # wird 30. Ein Wert, der nicht auf dem Raster liegt, kommt als derselbe
-        # zurueck wie vorher - und dann gibt es zu Recht nichts zu uebertragen.
-        ("verkürzt", {"duration": 15}, {"end"}),
+        ("verkürzt", {"duration": 10}, {"end"}),
         ("verlängert", {"duration": 105}, {"end"}),
     ]
     for name, felder, erwartet in schritte:
+        # TANSS rundet die Dauer beim Speichern, und **mit welchem Raster**, ist
+        # Sache der jeweiligen Installation — 15 Minuten hier, anderswo 10 oder 6.
+        # Der Prüfstand nimmt deshalb kein Raster an, sondern liest nach, was der
+        # Server tatsächlich gespeichert hat. Kam derselbe Wert zurück wie vorher,
+        # gibt es zu Recht nichts zu übertragen, und ein ausbleibendes Update ist
+        # richtig statt falsch.
+        vorher = welt.tanss_holen(support)
         welt.tanss_aendern(support, **felder)
+        nachher = welt.tanss_holen(support)
+        if vorher and nachher and (vorher.date, vorher.duration) == (nachher.date,
+                                                                     nachher.duration):
+            befunde.append(_ok(f"{name}: vom Server auf denselben Wert normalisiert "
+                               "— nichts zu übertragen"))
+            continue
+
         _, getan = lauf(welt, nach_aenderung=True)
         änderungen = [a for a in getan if a["operation"] == "update"]
         if len(änderungen) != 1:
