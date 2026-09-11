@@ -78,6 +78,7 @@ class SyncEngine:
         dry_run = dry_run or self.config.sync.dry_run
         report = RunReport()
         run_id = self.state.begin_run()
+        report.run_id = run_id
         audit = AuditLogger(self.state, Redactor(
             redact_content=self.config.logging.redact_content), run_id)
 

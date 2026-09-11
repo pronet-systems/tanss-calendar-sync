@@ -190,6 +190,10 @@ class RunReport:
     errors: int = 0
     aborted_reason: str | None = None
     detail: dict = field(default_factory=dict)
+    # Kennung dieses Durchlaufs. Ohne sie zeigt die Ausgabe nach einem Lauf ohne
+    # Aenderungen die Tabelle des VORHERIGEN Laufs - und es sieht so aus, als waere
+    # gerade etwas geschrieben worden.
+    run_id: int | None = None
 
     @property
     def touched(self) -> int:

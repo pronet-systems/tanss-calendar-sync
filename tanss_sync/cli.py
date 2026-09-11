@@ -187,7 +187,7 @@ def sync_cmd(
             if dry_run:
                 console.print("[bold]Probelauf — es wurde nichts geschrieben.[/bold]")
                 console.print()
-            _print_actions(rt.state)
+            _print_actions(rt.state, run_id=report.run_id)
             console.print()
             console.print(f"[bold]{report.summary()}[/bold]")
             if report.aborted_reason:
@@ -365,12 +365,21 @@ def _run_discovery(rt) -> None:
         log.warning("Verzeichnisabgleich fehlgeschlagen: %s", exc)
 
 
-def _print_actions(state, limit: int = 60) -> None:
-    """Zeigt, was der letzte Lauf getan hätte oder getan hat."""
+def _print_actions(state, limit: int = 60, *, run_id: int | None = None) -> None:
+    """Zeigt, was **dieser** Lauf getan hätte oder getan hat.
+
+    ``run_id`` ist wichtig: Ohne ihn zeigte ein Lauf ohne Änderungen die Tabelle des
+    vorherigen Laufs, weil dessen Einträge dann die jüngsten in der Tabelle sind. Es
+    sähe so aus, als wäre gerade etwas geschrieben worden.
+    """
+    if run_id is None:
+        run_id = (state.connect().execute(
+            "SELECT MAX(run_id) AS n FROM audit").fetchone() or {"n": None})["n"]
+
     rows = state.connect().execute(
         "SELECT operation, outcome, reason, mailbox, uid, changed_fields "
-        "FROM audit WHERE run_id = (SELECT MAX(run_id) FROM audit) "
-        "AND side != 'system' ORDER BY id LIMIT ?", (limit,)).fetchall()
+        "FROM audit WHERE run_id = ? AND side != 'system' ORDER BY id LIMIT ?",
+        (run_id, limit)).fetchall()
     if not rows:
         console.print("[dim]Keine Änderungen.[/dim]")
         return
