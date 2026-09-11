@@ -17,7 +17,7 @@ from ..audit.redaction import Redactor
 from ..config.models import AppConfig
 from ..domain.change import Outcome, SyncAction, SyncOperation
 from ..domain.identity import UserMapping
-from ..domain.uid import canonical_uid
+from ..domain.uid import canonical_uid, pending_uid
 from ..microsoft.mapper import GraphMapper
 from ..microsoft.repository import GraphRepository
 from ..state.records import LinkRecord, RunReport
@@ -52,7 +52,7 @@ class SyncEngine:
             append_company=config.sync.company_suffix_in_subject)
         self.rules = SyncRules(config.sync)
         self.echo = EchoGuard(config.sync.echo_suppression_seconds)
-        self.reconciler = Reconciler(self.rules, self.echo)
+        self.reconciler = Reconciler(self.rules, self.echo, time)
         self.guard = DeletionGuard(config.safety, state,
                                    own_domains=config.own_mail_domains)
         self.holder = f"{os.getpid()}:{threading.current_thread().name}"
@@ -150,7 +150,12 @@ class SyncEngine:
             for pair, state in changes.baselines:
                 self._store_baseline(pair, state, user)
 
+        # Uebernahmen sind KEINE Neuanlagen - sie erzeugen nichts, sie verknuepfen nur.
         creates = [a for a in changes.actions if a.operation is SyncOperation.CREATE]
+        adoptions = [a for a in changes.actions if a.operation is SyncOperation.LINK]
+        if adoptions:
+            log.info("%s bestehende Outlook-Termine werden übernommen statt angelegt",
+                     len(adoptions))
         if len(creates) > self.config.safety.max_creates_per_run and not allow_bulk_create:
             reason = (f"{len(creates)} Neuanlagen in einem Lauf "
                       f"(Grenze {self.config.safety.max_creates_per_run})")
@@ -195,7 +200,7 @@ class SyncEngine:
             uid, sequence = self.tanss_mapper.uid_of(support)
             if not uid:
                 # Noch nie gekoppelt - die UID entsteht erst beim Anlegen in Graph.
-                uid = f"pending:{support.id}"
+                uid = pending_uid(support.id)
             appointment = self.tanss_mapper.to_appointment(support, user.mailbox, uid)
             if sequence >= 0:
                 appointment.key = appointment.key.__class__(
@@ -218,6 +223,8 @@ class SyncEngine:
                 self._create_in_graph(action, user)
             elif action.operation is SyncOperation.UPDATE:
                 self._update_in_graph(action, user)
+            elif action.operation is SyncOperation.LINK:
+                self._adopt_in_graph(action, user)
             else:
                 return
         except Exception as exc:  # noqa: BLE001
@@ -267,6 +274,46 @@ class SyncEngine:
         except Exception as exc:  # noqa: BLE001
             log.warning("Kopplung für Support %s nicht zurückgeschrieben: %s. "
                         "Der Outlook-Termin ist angelegt und lokal verknüpft.",
+                        appointment.tanss_support_id, exc)
+
+    def _adopt_in_graph(self, action: SyncAction, user: UserMapping) -> None:
+        """Einen bestehenden Outlook-Termin übernehmen, ohne ihn zu verändern.
+
+        Es wird **nichts** am Termin geschrieben außer der Kennung, an der wir ihn
+        später wiederfinden. Der Sinn der Übernahme ist ja gerade, dass er bereits
+        richtig ist.
+        """
+        appointment = action.appointment
+        existing = self.graph.get_event(user.mailbox, appointment.graph_event_id,
+                                        with_tanss_id=False)
+        if existing is None:
+            log.warning("Übernahmekandidat %s ist verschwunden — übersprungen",
+                        appointment.graph_event_id)
+            return
+
+        uid = self.graph.uid_for(user.mailbox, existing)
+        appointment.key = appointment.key.__class__(
+            user.mailbox, uid, appointment.key.sequence, appointment.key.travel_role)
+
+        if appointment.tanss_support_id:
+            try:
+                self.graph.set_tanss_id(user.mailbox, existing.id,
+                                        appointment.tanss_support_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Kennung am übernommenen Termin nicht gesetzt: %s", exc)
+
+        link = LinkRecord.for_new(appointment, user)
+        link.graph_event_id = existing.id
+        after = self.graph_mapper.to_appointment(existing, user.mailbox, uid)
+        link.last_hash_graph = fingerprint(after)
+        link.last_hash_tanss = fingerprint(appointment)
+        link.last_seen_at = datetime.now(UTC)
+        self.state.upsert_link(link)
+
+        try:
+            self._write_back_coupling(appointment)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Kopplung für Support %s nicht zurückgeschrieben: %s",
                         appointment.tanss_support_id, exc)
 
     def _update_in_graph(self, action: SyncAction, user: UserMapping) -> None:

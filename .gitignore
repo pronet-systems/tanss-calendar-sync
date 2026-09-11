@@ -1,5 +1,6 @@
 # Konfiguration und Geheimnisse — gehören niemals ins Repository
 config.json
+.local/
 config.partial.json
 *.pem
 *.pfx

@@ -32,6 +32,35 @@ _SUFFIX_LEN = 70
 _SEQ_SEPARATOR = "|"
 NO_SEQUENCE = -1
 
+# Ersatzschluessel fuer einen TANSS-Termin, der noch nie nach Outlook gekoppelt wurde.
+# Die echte UID entsteht erst beim Anlegen in Graph - bis dahin braucht jeder Termin
+# trotzdem einen eigenen, eindeutigen Schluessel, sonst fielen alle ungekoppelten
+# Termine zu einem einzigen Paar zusammen.
+PENDING_PREFIX = "pending:"
+
+
+def is_pending(uid: str | None) -> bool:
+    """Ob dieser Schlüssel ein Platzhalter ist — der Termin also noch nie gekoppelt war."""
+    return bool(uid) and uid.startswith(PENDING_PREFIX)
+
+
+def pending_uid(support_id: int) -> str:
+    return f"{PENDING_PREFIX}{support_id}"
+
+
+# Ersatzschluessel fuer einen Outlook-Termin ohne iCalUId. Er ist an die Termin-Kennung
+# gebunden und damit eindeutig und stabil. Eine TANSS-SYNC_GROUP sieht nie so aus, eine
+# Fehlpaarung ist damit ausgeschlossen.
+ORPHAN_PREFIX = "graph:"
+
+
+def orphan_uid(event_id: str) -> str:
+    return f"{ORPHAN_PREFIX}{event_id}"
+
+
+def is_orphan(uid: str | None) -> bool:
+    return bool(uid) and uid.startswith(ORPHAN_PREFIX)
+
 
 def canonical_uid(ical_uid: str | None) -> str:
     """Liefert die kanonische UID zu einer Graph-``iCalUId``.

@@ -6,7 +6,7 @@ import logging
 import urllib.parse
 from datetime import datetime
 
-from ..domain.uid import canonical_uid
+from ..domain.uid import canonical_uid, orphan_uid
 from ..util.timezone import TimeConverter
 from .client import GraphClient, GraphNotFound, GraphResyncRequired
 from .models import TANSS_ID_PROPERTY, DeltaResult, GraphEvent, GraphUser
@@ -167,16 +167,22 @@ class GraphRepository:
         nie und legt bei jedem Lauf Duplikate an.
 
         Stattdessen kommt sie vom Master — einmal geholt, dann zwischengespeichert.
+
+        Hat ein Termin **gar keine** UID, tritt ein Ersatzschlüssel aus seiner
+        Termin-Kennung an ihre Stelle. Ohne ihn bekämen alle UID-losen Termine
+        denselben leeren Schlüssel und fielen zu einem einzigen zusammen — alle
+        bis auf einen wären für den Abgleich unsichtbar.
         """
         if not event.is_series_part or not event.series_master_id:
-            return canonical_uid(event.ical_uid)
+            return canonical_uid(event.ical_uid) or orphan_uid(event.id)
 
         cached = self.uid_cache.get(mailbox, event.series_master_id)
         if cached:
             return cached
 
         master = self.get_event(mailbox, event.series_master_id, with_tanss_id=False)
-        uid = canonical_uid(master.ical_uid) if master else canonical_uid(event.ical_uid)
+        uid = (canonical_uid(master.ical_uid) if master
+               else canonical_uid(event.ical_uid)) or orphan_uid(event.id)
         if master is None:
             log.warning("Serien-Master %s in %s nicht auffindbar — nutze die UID der "
                         "Occurrence als Notbehelf", event.series_master_id, mailbox)

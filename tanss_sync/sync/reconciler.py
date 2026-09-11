@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from ..domain.appointment import Appointment
 from ..domain.change import ChangeSet, SyncAction, SyncOperation
 from ..domain.identity import SyncDirection, SyncKey, UserMapping
-from ..domain.uid import uid_matches
+from ..domain.uid import is_pending, uid_matches
 from ..state.records import LinkRecord
+from .adoption import find_adoption
 from .compare import Changed, fields_to_write, what_changed
 from .echo import EchoGuard
 from .rules import SyncRules
@@ -45,9 +46,11 @@ class ReconcileResult:
 
 
 class Reconciler:
-    def __init__(self, rules: SyncRules, echo: EchoGuard) -> None:
+    def __init__(self, rules: SyncRules, echo: EchoGuard, clock=None) -> None:
         self.rules = rules
         self.echo = echo
+        # Entscheidet bei Abwesenheiten, was "derselbe Kalendertag" heisst.
+        self.to_local = clock.local if clock is not None else None
 
     # ------------------------------------------------------------------ Paare
 
@@ -112,6 +115,11 @@ class Reconciler:
         """
         changes = ChangeSet()
 
+        # Outlook-Termine ohne Partner - moegliche Uebernahmekandidaten.
+        claimed: set[str] = set()
+        free_candidates = [p.graph for p in pairs
+                           if p.graph is not None and p.tanss is None]
+
         for pair in pairs:
             source = pair.tanss
             if source is None:
@@ -125,6 +133,40 @@ class Reconciler:
                 continue
 
             if pair.graph is None:
+                # Ein Termin, der bereits eine Kopplungs-UID traegt, wird NIE
+                # angelegt. Die UID sagt: Er war schon einmal in Outlook. Dass wir
+                # den Partner nicht sehen, heisst nicht, dass es ihn nicht gibt -
+                # er kann eine Serien-Occurrence sein, ausserhalb des Fensters
+                # liegen oder von einer Regel ausgenommen sein. Am Kundensystem
+                # nachgewiesen: ein Serientermin, den der singleInstance-Filter
+                # ausblendet, waere hier ein zweites Mal angelegt worden.
+                # Wurde er dagegen wirklich in Outlook geloescht, gehoert das dem
+                # Loeschpfad - nicht dem Anlagepfad.
+                if not is_pending(source.key.uid):
+                    changes.skipped.append((
+                        source,
+                        "bereits gekoppelt, Gegenstück derzeit nicht sichtbar — "
+                        "nicht angelegt, um kein Duplikat zu erzeugen"))
+                    continue
+
+                # Bevor etwas angelegt wird: Gibt es in Outlook laengst ein
+                # Gegenstueck ohne Kopplung? Eine fruehere Terminsynchronisation
+                # hinterlaesst genau das - besonders bei Abwesenheiten.
+                adoption = find_adoption(
+                    source,
+                    [c for c in free_candidates if c.graph_event_id not in claimed],
+                    to_local=self.to_local)
+                if adoption is not None:
+                    source.graph_event_id = adoption.candidate.graph_event_id
+                    claimed.add(adoption.candidate.graph_event_id)
+                    changes.actions.append(SyncAction(
+                        direction=SyncDirection.TANSS_TO_M365,
+                        operation=SyncOperation.LINK,
+                        appointment=source,
+                        reason=adoption.reason,
+                    ))
+                    continue
+
                 changes.actions.append(SyncAction(
                     direction=SyncDirection.TANSS_TO_M365,
                     operation=SyncOperation.CREATE,

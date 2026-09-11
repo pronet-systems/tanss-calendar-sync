@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Eigene Metadaten am Termin. Nur benannte Extended Properties sind filterbar -
 # Open Extensions sind es nicht, deshalb dieser Weg.
@@ -43,6 +43,19 @@ class GraphEvent(BaseModel):
 
     id: str
     ical_uid: str = Field(alias="iCalUId", default="")  # roh - erst kanonisieren!
+
+    @field_validator("ical_uid", mode="before")
+    @classmethod
+    def _null_uid_is_empty(cls, value: object) -> str:
+        """``iCalUId`` kommt bei einzelnen Terminen als ``null`` zurück.
+
+        Am Kundensystem belegt: ein vom Altsystem geschriebener Termin ohne die
+        Eigenschaft. Ein strenges Modell lässt daran den Abgleich des gesamten
+        Postfachs scheitern — ein einzelner unvollständiger Termin darf aber nie
+        alle anderen mitreißen. Fehlt die UID, ist sie eben leer; wie damit
+        umzugehen ist, entscheidet :meth:`GraphRepository.uid_for`.
+        """
+        return value if isinstance(value, str) else ""
     subject: str = ""
     body: dict = Field(default_factory=dict)
     body_preview: str = Field(alias="bodyPreview", default="")
