@@ -277,6 +277,18 @@ class Reconciler:
         """
         changes = ChangeSet()
 
+        # Welche Haupttermine dieser Lauf ueberhaupt aus TANSS gesehen hat. Fuer eine
+        # Fahrt-Zeile ist das die entscheidende Frage: Ihr Fehlen heisst nur dann
+        # "Fahrtzeit entfernt", wenn ihr Haupttermin in dieser Runde vorlag. War er
+        # nicht dabei - weil er vor dem Aktivierungsstichtag entstand oder aus dem
+        # Zeitfenster gewandert ist -, sagt das ueber die Fahrtzeit gar nichts. Ohne
+        # diese Unterscheidung wuerden die Fahrt-Bloecke jedes aelteren Termins
+        # geloescht, denn der Nachweis "Haupttermin lebt noch" traefe auf sie alle zu.
+        gesehene_haupttermine = {
+            p.tanss.key.uid for p in pairs
+            if p.tanss is not None and p.tanss.key.travel_role == "main"
+        }
+
         for pair in pairs:
             link = pair.link
             if link is None or link.state != "linked":
@@ -285,6 +297,13 @@ class Reconciler:
             if pair.tanss is None and pair.graph is not None:
                 # In TANSS nicht mehr zu sehen - Verdacht auf Loeschung dort.
                 if not user.direction.allows_to_m365():
+                    continue
+                if (link.travel_role != "main"
+                        and link.uid not in gesehene_haupttermine):
+                    changes.skipped.append((
+                        pair.graph,
+                        "Fahrt-Block, dessen Haupttermin in diesem Lauf nicht vorlag — "
+                        "das ist kein Beleg, dass die Fahrtzeit entfernt wurde"))
                     continue
                 changes.actions.append(SyncAction(
                     direction=SyncDirection.TANSS_TO_M365,

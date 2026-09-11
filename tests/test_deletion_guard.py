@@ -144,3 +144,43 @@ def test_bremse_laesst_sich_einschalten(tmp_path) -> None:
     streng = DeletionGuard(SafetyConfig(max_deletes_per_run=5), store)
     assert not streng.check_batch(deletions(6), 500, scope="user:1").allowed
     store.close()
+
+
+# ------------------------------------ Fahrt-Blöcke ausserhalb des Abgleichfensters
+
+def test_fahrt_block_ohne_seinen_haupttermin_wird_nicht_geloescht() -> None:
+    """Sein Fehlen sagt nichts, solange der Haupttermin gar nicht vorlag.
+
+    Ein Termin, der vor dem Aktivierungsstichtag entstand, fehlt in der TANSS-Liste.
+    Seine Fahrt-Zeile wird dann nicht projiziert — und der Nachweis „Haupttermin lebt
+    noch" träfe auf sie zu. Ohne diese Unterscheidung verlöre jeder ältere Termin
+    seine Fahrt-Blöcke in Outlook.
+    """
+    import datetime as dt
+
+    from tanss_sync.config.models import SyncConfig
+    from tanss_sync.domain.identity import UserMapping
+    from tanss_sync.state.records import LinkRecord
+    from tanss_sync.sync.echo import EchoGuard
+    from tanss_sync.sync.reconciler import Pair, Reconciler
+    from tanss_sync.sync.rules import SyncRules
+
+    mailbox = "mb@example.com"
+    benutzer = UserMapping(
+        tanss_employee_id=42, tanss_name="M", tanss_email=mailbox, mailbox=mailbox,
+        enabled=True, direction=SyncDirection.BOTH,
+        activated_at=dt.datetime(2020, 1, 1, tzinfo=dt.UTC))
+
+    block = Appointment(key=SyncKey(mailbox, "uid-alt", -1, "travel_to"),
+                        kind=AppointmentKind.TRAVEL_TO)
+    block.graph_event_id = "EV-anfahrt"
+    link = LinkRecord(mailbox=mailbox, uid="uid-alt", sequence=-1,
+                      travel_role="travel_to", tanss_support_id=4711,
+                      graph_event_id="EV-anfahrt", tanss_employee_id=42,
+                      write_direction=SyncDirection.TANSS_TO_M365)
+
+    rec = Reconciler(SyncRules(SyncConfig()), EchoGuard(0))
+    kandidaten = rec.deletion_candidates([Pair(tanss=None, graph=block, link=link)],
+                                         benutzer)
+    assert kandidaten.actions == []
+    assert "Haupttermin" in kandidaten.skipped[0][1]
