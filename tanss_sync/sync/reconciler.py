@@ -75,8 +75,24 @@ class Reconciler:
         # und wuerde bei jedem Lauf neu angelegt.
         links_by_event = {link.graph_event_id: link for link in links
                           if link.graph_event_id}
+        # Vierter Weg, nur fuer die TANSS-Seite: ueber die Support-Kennung.
+        # Die echte UID erreicht TANSS ausschliesslich ueber _write_back_coupling,
+        # das sie in die metaInfos des Datensatzes schreibt. Urlaub und Abwesenheit
+        # haengen an einem Urlaubsantrag und sind ueber die Support-Route nicht
+        # schreibbar - ihre TANSS-Seite liefert deshalb dauerhaft den Platzhalter
+        # und faende ihre Kopplung sonst nie wieder. Das Paar zerfiele bei jedem
+        # Lauf in zwei Haelften, der Termin galte erneut als Uebernahmekandidat.
+        # travel_role gehoert in den Schluessel: Fahrtzeilen teilen sich die
+        # Support-Kennung mit ihrem Haupttermin.
+        links_by_support = {(link.tanss_support_id, link.travel_role): link
+                            for link in links if link.tanss_support_id}
 
         for appointment in tanss:
+            if is_pending(appointment.key.uid):
+                known = links_by_support.get(
+                    (appointment.tanss_support_id, appointment.key.travel_role))
+                if known is not None:
+                    appointment.key = known.key
             pair = by_key.setdefault(appointment.key, Pair())
             pair.tanss = appointment
             pair.link = links_by_key.get(appointment.key)
