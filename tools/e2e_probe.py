@@ -94,6 +94,10 @@ class Welt:
     #: Was ein Szenario dem naechsten weitergibt - etwa die Kennung seines Termins.
     merker: dict = field(default_factory=dict)
 
+    @property
+    def marke(self) -> str:
+        return MARKE
+
     # ---------------------------------------------------------------- Zeiten
 
     def uhr(self, stunde: int, minute: int = 0) -> dt.datetime:
@@ -358,7 +362,8 @@ def main(argv: list[str] | None = None) -> int:
 
     import e2e_szenarien as sz
 
-    bloecke = {"0": sz.BLOCK_0, "1": sz.BLOCK_1}
+    bloecke = {"0": sz.BLOCK_0, "1": sz.BLOCK_1, "2": sz.BLOCK_2,
+               "3": sz.BLOCK_3, "4": sz.BLOCK_4, "5": sz.BLOCK_5}
     gewaehlt = args.block or sorted(bloecke)
     szenarien = [s for b in gewaehlt for s in bloecke.get(b, [])]
 

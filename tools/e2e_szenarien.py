@@ -268,6 +268,215 @@ def a4_fahrt_entfernt(welt: Welt) -> list[Befund]:
     return befunde
 
 
+# --------------------------------------------------------------------- Block 2
+
+def b1_outlook_nach_tanss(welt: Welt) -> list[Befund]:
+    """Ein in Outlook eingetragener Termin muss in TANSS ankommen."""
+    ereignis = welt.graph_anlegen(titel="B1 aus Outlook", start=welt.uhr(10, 0),
+                                  dauer=30, text="Aus Outlook eingetragen")
+    _, getan = lauf(welt, nach_aenderung=True)
+    anlagen = [a for a in getan if a["operation"] == "create" and a["side"] == "tanss"]
+    if len(anlagen) != 1:
+        return [_fehler("genau eine Anlage in TANSS", f"{len(anlagen)} — {kurz(getan)}")]
+    befunde = [_ok("genau eine Anlage in TANSS")]
+
+    treffer = [s for s in welt.tanss_marken() if "B1 aus Outlook" in (s.outlook_title or "")]
+    if len(treffer) != 1:
+        return [*befunde, _fehler("Termin liegt in TANSS", f"{len(treffer)} gefunden")]
+    support = treffer[0]
+
+    # Ein selbst eingetragener Termin ohne Eingeladene ist ein FESTER Termin, keine
+    # Vormerkung - Graph meldet responseStatus "none" in beiden Lagen.
+    befunde.append(_ok("fester Termin, keine Vormerkung")
+                   if str(support.planning_type) == "APPOINTMENT_FIX"
+                   else _fehler("fester Termin, keine Vormerkung",
+                                f"planningType={support.planning_type}"))
+    befunde.append(_ok("eigene Firma eingetragen") if support.company_id
+                   else _fehler("eigene Firma eingetragen", "companyId fehlt"))
+    befunde.append(_ok("Kopplung in TANSS hinterlegt")
+                   if (support.meta_infos or {}).get("SYNC_GROUP")
+                   else _fehler("Kopplung in TANSS hinterlegt", "SYNC_GROUP fehlt"))
+
+    befunde.extend(still(welt, 2))
+    welt.merker["b1_event"] = ereignis
+    welt.merker["b1_support"] = support.id
+    return befunde
+
+
+def b2_outlook_aendern(welt: Welt) -> list[Befund]:
+    """Eine Änderung in Outlook muss nach TANSS durchschlagen."""
+    ereignis = welt.merker.get("b1_event")
+    if not ereignis:
+        return [_fehler("B2 setzt auf B1 auf", "kein Termin vorhanden")]
+
+    welt.graph_aendern(ereignis, {"subject": f"{welt.marke} B2 in Outlook geaendert"})
+    _, getan = lauf(welt, nach_aenderung=True)
+    änderungen = [a for a in getan if a["operation"] == "update" and a["side"] == "tanss"]
+    befunde = [_ok("genau ein Update in TANSS") if len(änderungen) == 1
+               else _fehler("genau ein Update in TANSS", f"{len(änderungen)} — {kurz(getan)}")]
+
+    support = welt.tanss_holen(welt.merker.get("b1_support"))
+    if support and "B2 in Outlook geaendert" in (support.outlook_title or ""):
+        befunde.append(_ok("neuer Betreff steht in TANSS"))
+    else:
+        befunde.append(_fehler("neuer Betreff steht in TANSS",
+                               f"Titel: {support.outlook_title if support else '—'!r}"))
+
+    befunde.extend(still(welt, 2))
+    return befunde
+
+
+# --------------------------------------------------------------------- Block 3
+
+def c1_kollision(welt: Welt) -> list[Befund]:
+    """Beide Seiten ändern denselben Termin zwischen zwei Läufen.
+
+    Nur der eingestellte Gewinner darf schreiben. Schriebe auch die Verliererseite,
+    drehten sich beide gegenseitig zurück — bei jedem Lauf aufs Neue.
+    """
+    support = welt.merker.get("b1_support")
+    ereignis = welt.merker.get("b1_event")
+    if not (support and ereignis):
+        return [_fehler("C1 setzt auf B1 auf", "kein Termin vorhanden")]
+
+    gewinner = welt.config.sync.conflict_winner
+    welt.tanss_aendern(support, outlook_title=f"{welt.marke} C1 aus TANSS")
+    welt.graph_aendern(ereignis, {"subject": f"{welt.marke} C1 aus Outlook"})
+
+    _, getan = lauf(welt, nach_aenderung=True)
+    nach_tanss = [a for a in getan if a["side"] == "tanss" and a["operation"] == "update"]
+    nach_graph = [a for a in getan if a["side"] == "graph" and a["operation"] == "update"]
+
+    befunde = []
+    if gewinner == "tanss":
+        befunde.append(_ok("nur Richtung Outlook geschrieben") if not nach_tanss
+                       else _fehler("nur Richtung Outlook geschrieben",
+                                    "es wurde auch nach TANSS geschrieben"))
+        befunde.append(_ok("die Gewinnerseite hat geschrieben") if nach_graph
+                       else _fehler("die Gewinnerseite hat geschrieben", "nichts passiert"))
+    else:
+        befunde.append(_ok("nur Richtung TANSS geschrieben") if not nach_graph
+                       else _fehler("nur Richtung TANSS geschrieben",
+                                    "es wurde auch nach Outlook geschrieben"))
+
+    befunde.extend(still(welt, 2))
+    return befunde
+
+
+# --------------------------------------------------------------------- Block 4
+
+def d1_in_outlook_geloescht(welt: Welt) -> list[Befund]:
+    """In Outlook entfernt — in TANSS muss es folgen, aber erst mit Nachweis."""
+    ereignis = welt.merker.get("b1_event")
+    support = welt.merker.get("b1_support")
+    if not (ereignis and support):
+        return [_fehler("D1 setzt auf B1 auf", "kein Termin vorhanden")]
+
+    welt.graph_loeschen(ereignis)
+    lauf(welt)
+    offen = welt.rt.state.connect().execute(
+        "SELECT COUNT(*) AS n FROM pending_deletions "
+        "WHERE executed_at IS NULL AND cancelled_at IS NULL").fetchone()["n"]
+    befunde = [_ok("erst vorgemerkt, nicht gelöscht") if offen
+               else _fehler("erst vorgemerkt, nicht gelöscht", "keine Vormerkung")]
+
+    time.sleep(welt.config.safety.deletion_grace_seconds + 5)
+    _, getan = lauf(welt)
+    löschungen = [a for a in getan
+                  if a["operation"] == "delete" and a["outcome"] == "ok"]
+    befunde.append(_ok("in TANSS gelöscht") if löschungen
+                   else _fehler("in TANSS gelöscht", f"nichts — {kurz(getan)}"))
+
+    befunde.append(_ok("Termin ist in TANSS weg") if welt.tanss_holen(support) is None
+                   else _fehler("Termin ist in TANSS weg", "er steht noch"))
+
+    sicherung = welt.rt.state.connect().execute(
+        "SELECT COUNT(*) AS n FROM deleted_backup WHERE tanss_support_id = ?",
+        (support,)).fetchone()["n"]
+    befunde.append(_ok("vor der Löschung gesichert") if sicherung
+                   else _fehler("vor der Löschung gesichert", "keine Sicherung"))
+
+    befunde.extend(still(welt, 2))
+    welt.merker.pop("b1_event", None)
+    welt.merker.pop("b1_support", None)
+    return befunde
+
+
+def d2_in_tanss_geloescht(welt: Welt) -> list[Befund]:
+    """Umgekehrt: in TANSS entfernt, der Outlook-Termin muss folgen."""
+    support = welt.tanss_anlegen(titel="D2 Loeschprobe", start=welt.uhr(11, 0),
+                                 dauer=30, text="D2 Loeschprobe")
+    lauf(welt)
+    treffer = [e for e in welt.graph_marken() if "D2 Loeschprobe" in (e.subject or "")]
+    if not treffer:
+        return [_fehler("D2: Termin kam in Outlook an", "er fehlt")]
+    ereignis_id = treffer[0].id
+
+    welt.tanss_loeschen(support)
+    lauf(welt)
+    time.sleep(welt.config.safety.deletion_grace_seconds + 5)
+    _, getan = lauf(welt)
+
+    löschungen = [a for a in getan
+                  if a["operation"] == "delete" and a["outcome"] == "ok"]
+    befunde = [_ok("in Outlook gelöscht") if löschungen
+               else _fehler("in Outlook gelöscht", f"nichts — {kurz(getan)}")]
+    befunde.append(_ok("Termin ist in Outlook weg")
+                   if not any(e.id == ereignis_id for e in welt.graph_heute())
+                   else _fehler("Termin ist in Outlook weg", "er steht noch"))
+
+    befunde.extend(still(welt, 2))
+    return befunde
+
+
+# --------------------------------------------------------------------- Block 5
+
+def e1_frei_wird_uebergangen(welt: Welt) -> list[Befund]:
+    """Ein Outlook-Termin mit Status *Frei* geht nicht nach TANSS.
+
+    Damit lassen sich bewusst Einträge führen, die der Abgleich nichts angeht.
+    """
+    welt.graph_anlegen(titel="E1 frei", start=welt.uhr(12, 0), dauer=30,
+                       zeigen_als="free")
+    _, getan = lauf(welt, nach_aenderung=True)
+    nach_tanss = [a for a in getan if a["side"] == "tanss"]
+    befunde = [_ok("nichts nach TANSS geschrieben") if not nach_tanss
+               else _fehler("nichts nach TANSS geschrieben", kurz(getan))]
+    befunde.append(_ok("kein Termin in TANSS entstanden")
+                   if not any("E1 frei" in (s.outlook_title or "")
+                              for s in welt.tanss_marken())
+                   else _fehler("kein Termin in TANSS entstanden", "es gibt einen"))
+    befunde.extend(still(welt, 2))
+    return befunde
+
+
+def e2_auf_frei_gesetzt(welt: Welt) -> list[Befund]:
+    """Ein **gekoppelter** Termin wird auf *Frei* gesetzt: entkoppeln, nicht löschen.
+
+    Ohne diese Regel wäre „auf Frei setzen" ein stiller Löschbefehl für den
+    TANSS-Datensatz.
+    """
+    support = welt.tanss_anlegen(titel="E2 Entkopplung", start=welt.uhr(13, 0),
+                                 dauer=30, text="E2 Entkopplung")
+    lauf(welt)
+    treffer = [e for e in welt.graph_marken() if "E2 Entkopplung" in (e.subject or "")]
+    if not treffer:
+        return [_fehler("E2: Termin kam in Outlook an", "er fehlt")]
+
+    welt.graph_aendern(treffer[0].id, {"showAs": "free"})
+    _, getan = lauf(welt, nach_aenderung=True)
+
+    entkopplungen = [a for a in getan if a["operation"] == "detach"]
+    löschungen = [a for a in getan if a["operation"] == "delete"]
+    befunde = [_ok("entkoppelt statt gelöscht") if entkopplungen and not löschungen
+               else _fehler("entkoppelt statt gelöscht", kurz(getan) or "nichts geschah")]
+    befunde.append(_ok("der TANSS-Termin bleibt bestehen")
+                   if welt.tanss_holen(support) is not None
+                   else _fehler("der TANSS-Termin bleibt bestehen", "er ist weg"))
+    befunde.extend(still(welt, 2))
+    return befunde
+
+
 BLOCK_0 = [("0.1", "Nulllauf über den echten Kalender", nulllauf)]
 
 BLOCK_1 = [
@@ -275,4 +484,23 @@ BLOCK_1 = [
     ("1.2", "Zeiten ändern", a2_zeiten),
     ("1.3", "Fahrtzeiten an gekoppeltem Termin", a3_fahrten),
     ("1.4", "Fahrtzeiten entfernen", a4_fahrt_entfernt),
+]
+
+BLOCK_2 = [
+    ("2.1", "Grundfall Outlook → TANSS", b1_outlook_nach_tanss),
+    ("2.2", "In Outlook ändern", b2_outlook_aendern),
+]
+
+BLOCK_3 = [
+    ("3.1", "Kollision: beide Seiten geändert", c1_kollision),
+]
+
+BLOCK_4 = [
+    ("4.1", "In Outlook gelöscht", d1_in_outlook_geloescht),
+    ("4.2", "In TANSS gelöscht", d2_in_tanss_geloescht),
+]
+
+BLOCK_5 = [
+    ("5.1", "Status Frei wird übergangen", e1_frei_wird_uebergangen),
+    ("5.2", "Auf Frei gesetzt: entkoppeln statt löschen", e2_auf_frei_gesetzt),
 ]
