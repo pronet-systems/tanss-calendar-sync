@@ -208,8 +208,15 @@ class Reconciler:
 
             reason = ("in TANSS geändert: " + ", ".join(sorted(fields)))
             if state.is_conflict:
-                reason = ("beide Seiten geändert — " + self.rules.config.conflict_winner
-                          + " gewinnt: " + ", ".join(sorted(fields)))
+                # Bei einem Konflikt schreibt nur der Gewinner. Schriebe hier auch
+                # die Verliererseite, ueberschrieben sich beide Richtungen
+                # abwechselnd - der Termin flaeckerte bei jedem Lauf.
+                if self.rules.config.conflict_winner != "tanss":
+                    changes.skipped.append(
+                        (source, "beide Seiten geändert — Outlook gewinnt"))
+                    continue
+                reason = ("beide Seiten geändert — TANSS gewinnt: "
+                          + ", ".join(sorted(fields)))
 
             merged = _carry_identity(source, pair.graph)
             changes.actions.append(SyncAction(
@@ -223,8 +230,191 @@ class Reconciler:
         return changes
 
 
+    # ------------------------------------------------------------------ Löschungen
+
+    def deletion_candidates(self, pairs: list[Pair], user: UserMapping) -> ChangeSet:
+        """Termine, bei denen eine Löschung **möglich** ist — nicht erwiesen.
+
+        Hier entsteht ausdrücklich nur ein Verdacht. Dass ein Termin in der Liste fehlt,
+        heißt nicht, dass er gelöscht wurde: Er kann aus dem Zeitfenster gewandert sein,
+        von einem Filter erfasst werden oder in einer unvollständigen Antwort fehlen.
+        Den Nachweis holt der Durchlauf anschließend am Einzelobjekt ein; erst ein 404
+        auf gezielte Nachfrage zählt.
+
+        Vorausgesetzt wird immer eine **bestehende Kopplung**: Ohne sie gab es nie ein
+        Gegenstück, das verschwunden sein könnte.
+        """
+        changes = ChangeSet()
+
+        for pair in pairs:
+            link = pair.link
+            if link is None or link.state != "linked":
+                continue
+
+            if pair.tanss is None and pair.graph is not None:
+                # In TANSS nicht mehr zu sehen - Verdacht auf Loeschung dort.
+                if not user.direction.allows_to_m365():
+                    continue
+                changes.actions.append(SyncAction(
+                    direction=SyncDirection.TANSS_TO_M365,
+                    operation=SyncOperation.DELETE,
+                    appointment=pair.graph,
+                    reason="in TANSS nicht mehr aufgefunden — Nachweis ausstehend",
+                ))
+                continue
+
+            if pair.graph is None and pair.tanss is not None:
+                # Umgekehrt. Der Waechter lehnt das bei schreibgeschuetzten
+                # Kopplungen ohnehin ab - hier gar nicht erst vorschlagen, damit
+                # eine geloeschte Abwesenheit nie in die Naehe des Loeschpfads kommt.
+                if link.is_write_protected_in_tanss or link.travel_role != "main":
+                    continue
+                if not user.direction.allows_to_tanss():
+                    continue
+                changes.actions.append(SyncAction(
+                    direction=SyncDirection.M365_TO_TANSS,
+                    operation=SyncOperation.DELETE,
+                    appointment=pair.tanss,
+                    reason="in Outlook nicht mehr aufgefunden — Nachweis ausstehend",
+                ))
+
+        return changes
+
+
+    # ------------------------------------------------------------------ Rückweg
+
+    def reconcile_to_tanss(self, pairs: list[Pair], user: UserMapping) -> ChangeSet:
+        """Richtung Microsoft 365 → TANSS.
+
+        Der Rückweg ist der gefährlichere: In TANSS hängen an einem Termin Leistungen,
+        Tickets und Abwesenheitsanträge. Ein zu Unrecht geschriebener oder gelöschter
+        Datensatz kostet dort mehr als ein überflüssiger Kalendereintrag.
+
+        Drei Sperren, die es in der Gegenrichtung so nicht gibt:
+
+        * **Schreibschutz der Kopplung.** Fahrt-Termine und Abwesenheiten tragen
+          ``write_direction = tanss_to_m365``. Ohne diese Prüfung löschte ein in Outlook
+          entfernter Urlaubstag den echten Urlaub in TANSS, und ein gelöschter
+          Fahrt-Block über die gemeinsame Support-Kennung den Haupttermin.
+        * **Entkoppeln statt löschen.** Wird ein gekoppelter Termin unsynchronisierbar —
+          auf *Frei* gesetzt, ganztägig gemacht, abgesagt —, endet die Kopplung. Der
+          TANSS-Datensatz bleibt. Sonst wäre „auf Frei setzen" ein stiller Löschbefehl.
+        * **Kein Anlegen bei bestehender Kopplung.** Wie in der Gegenrichtung: Dass wir
+          das TANSS-Gegenstück nicht sehen, heißt nicht, dass es fehlt.
+        """
+        changes = ChangeSet()
+
+        for pair in pairs:
+            source = pair.graph
+            if source is None:
+                # Nur in TANSS vorhanden - das behandelt die Hinrichtung.
+                continue
+
+            if pair.link is not None and (pair.link.is_write_protected_in_tanss
+                                          or pair.link.travel_role != "main"):
+                # Die Fahrt-Rolle wird getrennt geprueft, obwohl sie den Schreibschutz
+                # bereits nach sich zieht. Eine Fahrt-Zeile teilt sich die Support-ID
+                # mit dem Haupttermin - eine Aenderung an ihr traefe immer ihn.
+                changes.skipped.append(
+                    (source, "TANSS-seitig schreibgeschützt (Abwesenheit oder Fahrt)"))
+                continue
+
+            if pair.link is not None:
+                excluded = self.rules.newly_excluded(source, pair.link)
+                if excluded:
+                    changes.actions.append(SyncAction(
+                        direction=SyncDirection.M365_TO_TANSS,
+                        operation=SyncOperation.DETACH,
+                        appointment=source,
+                        reason=excluded.reason,
+                    ))
+                    continue
+
+            verdict = self.rules.should_sync_to_tanss(source, user)
+            if not verdict:
+                changes.skipped.append((source, verdict.reason))
+                continue
+
+            if pair.tanss is None:
+                if pair.link is not None and pair.link.tanss_support_id:
+                    changes.skipped.append((
+                        source,
+                        "bereits gekoppelt, TANSS-Gegenstück derzeit nicht sichtbar — "
+                        "nicht angelegt, um kein Duplikat zu erzeugen"))
+                    continue
+
+                changes.actions.append(SyncAction(
+                    direction=SyncDirection.M365_TO_TANSS,
+                    operation=SyncOperation.CREATE,
+                    appointment=source,
+                    reason="in Outlook vorhanden, in TANSS nicht",
+                ))
+                continue
+
+            # Hat sich die Graph-Seite gegenueber IHRER eigenen Ausgangsmarke geaendert?
+            state = what_changed(pair.tanss, source, pair.link)
+
+            if state.side is Changed.UNKNOWN:
+                changes.baselines.append((pair, state))
+                changes.skipped.append(
+                    (source, "erster Abgleich dieses Termins — Ausgangsstand übernommen"))
+                continue
+
+            if state.side in (Changed.NEITHER, Changed.TANSS):
+                # NEITHER: nichts zu tun. TANSS: betrifft die Hinrichtung.
+                continue
+
+            if state.is_conflict and self.rules.config.conflict_winner != "outlook":
+                changes.skipped.append(
+                    (source, "beide Seiten geändert — TANSS gewinnt"))
+                continue
+
+            if pair.link is not None:
+                skip, reason = self.echo.should_skip(pair.link, "tanss",
+                                                     state.graph_hash)
+                if skip:
+                    changes.skipped.append((source, reason))
+                    continue
+
+            fields = fields_to_write(source, pair.tanss)
+            if not fields:
+                changes.baselines.append((pair, state))
+                continue
+
+            reason = "in Outlook geändert: " + ", ".join(sorted(fields))
+            if state.is_conflict:
+                reason = ("beide Seiten geändert — Outlook gewinnt: "
+                          + ", ".join(sorted(fields)))
+
+            merged = _carry_tanss_identity(source, pair.tanss)
+            changes.actions.append(SyncAction(
+                direction=SyncDirection.M365_TO_TANSS,
+                operation=SyncOperation.UPDATE,
+                appointment=merged,
+                reason=reason,
+                changed_fields=fields,
+            ))
+
+        return changes
+
+
 def _carry_identity(source: Appointment, target: Appointment) -> Appointment:
     """Übernimmt die Graph-Identität in den TANSS-Stand, damit das Update sein Ziel kennt."""
     source.graph_event_id = target.graph_event_id
     source.series_master_id = source.series_master_id or target.series_master_id
+    return source
+
+
+def _carry_tanss_identity(source: Appointment, target: Appointment) -> Appointment:
+    """Übernimmt die TANSS-Identität in den Outlook-Stand.
+
+    Ohne ``tanss_support_id`` wüsste das Update nicht, welchen Datensatz es ändert; ohne
+    ``employee_id`` und Firmenzuordnung verlöre der Termin beim Schreiben seine
+    Zugehörigkeit — ``metaInfos`` und Firma werden in TANSS ersetzt, nicht ergänzt.
+    """
+    source.tanss_support_id = target.tanss_support_id
+    source.employee_id = source.employee_id or target.employee_id
+    source.company_id = source.company_id or target.company_id
+    source.ticket_id = source.ticket_id or target.ticket_id
+    source.recurrence_rule_id = source.recurrence_rule_id or target.recurrence_rule_id
     return source

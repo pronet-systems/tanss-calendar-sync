@@ -184,6 +184,10 @@ class Appointment:
     break_minutes: int = 0
     recurrence: RecurrencePattern | None = None
     origin: Literal["TANSS", "OUTLOOK"] | None = None
+    # Antwort des Postfachinhabers auf die Einladung. Nicht zu verwechseln mit der
+    # Antwort einzelner Teilnehmer - massgeblich fuer SYNC_APPOINTMENT_STATUS ist
+    # allein, wie DIESER Mitarbeiter zugesagt hat.
+    own_response: str | None = None
     tanss_hash: str | None = None  # Add-in-Marker im Text, unveraendert erhalten
 
     # Aenderungsverfolgung

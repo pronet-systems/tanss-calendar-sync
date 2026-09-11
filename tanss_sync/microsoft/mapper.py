@@ -56,6 +56,7 @@ class GraphMapper:
 
         return Appointment(
             key=SyncKey(mailbox=mailbox, uid=uid, sequence=NO_SEQUENCE),
+            own_response=event.response,
             graph_event_id=event.id,
             series_master_id=event.series_master_id,
             subject=event.subject,

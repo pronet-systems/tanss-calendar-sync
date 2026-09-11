@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -129,6 +128,35 @@ class StateStore:
             (employee_id,),
         ).fetchone()
         return int(row["n"])
+
+    # ------------------------------------------------- vorgemerkte Löschungen
+
+    def pending_deletion(self, key: SyncKey, side: str) -> sqlite3.Row | None:
+        """Eine offene Vormerkung zu diesem Termin — noch nicht ausgeführt, nicht zurückgenommen."""
+        return self.connect().execute(
+            "SELECT * FROM pending_deletions WHERE mailbox=? AND uid=? AND sequence=? "
+            "AND travel_role=? AND side=? AND executed_at IS NULL "
+            "AND cancelled_at IS NULL ORDER BY id DESC LIMIT 1",
+            (key.mailbox, key.uid, key.sequence, key.travel_role, side),
+        ).fetchone()
+
+    def mark_deletion_executed(self, row_id: int) -> None:
+        self.connect().execute(
+            "UPDATE pending_deletions SET executed_at=? WHERE id=?", (_now(), row_id))
+
+    def cancel_deletion(self, key: SyncKey, side: str, reason: str) -> int:
+        """Nimmt offene Vormerkungen zurück — der Termin ist wieder aufgetaucht.
+
+        Das ist der Sinn der Karenzzeit: Beim Wandeln einer Vormerkung in einen festen
+        Termin verschwindet der Datensatz für Sekunden und kommt dann zurück.
+        """
+        cur = self.connect().execute(
+            "UPDATE pending_deletions SET cancelled_at=?, cancel_reason=? "
+            "WHERE mailbox=? AND uid=? AND sequence=? AND travel_role=? AND side=? "
+            "AND executed_at IS NULL AND cancelled_at IS NULL",
+            (_now(), reason, key.mailbox, key.uid, key.sequence, key.travel_role, side),
+        )
+        return cur.rowcount
 
     # ---------------------------------------------------------------- Läufe
 

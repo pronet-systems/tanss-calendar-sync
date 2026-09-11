@@ -16,18 +16,20 @@ from ..audit.logger import AuditLogger
 from ..audit.redaction import Redactor
 from ..config.models import AppConfig
 from ..domain.change import Outcome, SyncAction, SyncOperation
-from ..domain.identity import UserMapping
+from ..domain.identity import SyncDirection, UserMapping
 from ..domain.uid import canonical_uid, pending_uid
 from ..microsoft.mapper import GraphMapper
 from ..microsoft.repository import GraphRepository
 from ..state.records import LinkRecord, RunReport
 from ..state.store import StateStore
+from ..tanss.errors import ChangesDiscardedError
 from ..tanss.mapper import TanssMapper
 from ..tanss.repository import TanssRepository
 from ..util.html import HtmlText
 from ..util.timezone import TimeConverter
+from .company import CompanyResolver
 from .compare import fingerprint
-from .deletion import DeletionGuard
+from .deletion import DeletionEvidence, DeletionGuard
 from .echo import EchoGuard
 from .reconciler import Reconciler
 from .rules import SyncRules
@@ -50,12 +52,16 @@ class SyncEngine:
         self.graph_mapper = GraphMapper(time, html=html)
         self.subject = SubjectFormatter(
             append_company=config.sync.company_suffix_in_subject)
+        self.company = CompanyResolver(tanss, config.own_mail_domains,
+                                       config.tanss.own_company_id)
         self.rules = SyncRules(config.sync)
         self.echo = EchoGuard(config.sync.echo_suppression_seconds)
         self.reconciler = Reconciler(self.rules, self.echo, time)
         self.guard = DeletionGuard(config.safety, state,
                                    own_domains=config.own_mail_domains)
         self.holder = f"{os.getpid()}:{threading.current_thread().name}"
+        # Nachweise zu Loeschkandidaten, gueltig nur innerhalb eines Laufs.
+        self._evidence: dict[int, DeletionEvidence] = {}
 
     # ------------------------------------------------------------------ Durchlauf
 
@@ -75,7 +81,7 @@ class SyncEngine:
                 self.sync_user(user, audit, report, dry_run=dry_run,
                                allow_bulk_delete=allow_bulk_delete,
                                allow_bulk_create=allow_bulk_create)
-            except Exception as exc:  # noqa: BLE001 - ein Benutzer darf den Lauf nicht kippen
+            except Exception as exc:  # ein Benutzer darf den Lauf nicht kippen
                 report.errors += 1
                 log.exception("Abgleich für %s gescheitert", user.tanss_employee_id)
                 report.detail.setdefault("errors", []).append(
@@ -138,6 +144,32 @@ class SyncEngine:
         pairs = self.reconciler.pair(tanss_appointments, graph_appointments, links)
         changes = self.reconciler.reconcile_to_outlook(
             pairs, user, created_filtered=page.created_from is not None)
+
+        # Der Rueckweg arbeitet auf denselben Paaren. Beide Richtungen koennen
+        # denselben Termin betreffen - der Konfliktfall ist in beiden Richtungen
+        # so entschieden, dass nur der Gewinner schreibt.
+        back = self.reconciler.reconcile_to_tanss(pairs, user)
+        changes.actions.extend(back.actions)
+        changes.skipped.extend(back.skipped)
+        changes.baselines.extend(back.baselines)
+
+        # Loeschungen zuletzt - und nur die, fuer die der Nachweis am Einzelobjekt
+        # gelingt. Alles andere faellt hier heraus und wird nie zu einer Aktion.
+        for candidate in self.reconciler.deletion_candidates(pairs, user).actions:
+            proven, why = self._prove_deletion(candidate, user)
+            if proven is None:
+                # Der Termin ist noch da. Eine etwa laufende Vormerkung wird
+                # zurueckgenommen - genau dafuer gibt es die Karenzzeit.
+                if not dry_run:
+                    taken_back = self.state.cancel_deletion(
+                        candidate.appointment.key, candidate.target_side.value, why)
+                    if taken_back:
+                        log.info("Vorgemerkte Löschung von %s zurückgenommen: %s",
+                                 candidate.appointment.key, why)
+                changes.skipped.append((candidate.appointment, why))
+                continue
+            self._evidence[id(candidate)] = proven
+            changes.actions.append(candidate)
 
         for appointment, reason in changes.skipped:
             report.skipped += 1
@@ -210,8 +242,6 @@ class SyncEngine:
 
     def _apply(self, action: SyncAction, user: UserMapping, audit: AuditLogger,
                report: RunReport, *, dry_run: bool) -> None:
-        appointment = action.appointment
-
         if dry_run:
             audit.record(action, outcome=Outcome.DRY_RUN)
             _bump(report, action.operation)
@@ -219,12 +249,29 @@ class SyncEngine:
 
         started = datetime.now(UTC)
         try:
-            if action.operation is SyncOperation.CREATE:
+            if action.direction is SyncDirection.M365_TO_TANSS:
+                if action.operation is SyncOperation.CREATE:
+                    self._create_in_tanss(action, user)
+                elif action.operation is SyncOperation.UPDATE:
+                    self._update_in_tanss(action, user)
+                elif action.operation is SyncOperation.DETACH:
+                    self._detach(action, user)
+                elif action.operation is SyncOperation.DELETE:
+                    if not self._delete(action, user):
+                        audit.record(action, outcome=Outcome.SCHEDULED)
+                        return
+                else:
+                    return
+            elif action.operation is SyncOperation.CREATE:
                 self._create_in_graph(action, user)
             elif action.operation is SyncOperation.UPDATE:
                 self._update_in_graph(action, user)
             elif action.operation is SyncOperation.LINK:
                 self._adopt_in_graph(action, user)
+            elif action.operation is SyncOperation.DELETE:
+                if not self._delete(action, user):
+                    audit.record(action, outcome=Outcome.SCHEDULED)
+                    return
             else:
                 return
         except Exception as exc:  # noqa: BLE001
@@ -342,6 +389,204 @@ class SyncEngine:
         self.echo.mark_written(link, "graph", link.last_hash_graph or "")
         link.last_seen_at = datetime.now(UTC)
         self.state.upsert_link(link)
+
+    # ------------------------------------------------------------------ Löschen
+
+    def _prove_deletion(self, action: SyncAction, user: UserMapping):
+        """Fragt das vermisste Objekt **gezielt** nach. Nur ein 404 ist ein Nachweis.
+
+        Jede andere Antwort bedeutet: Das Objekt existiert noch, es war nur nicht in der
+        Liste. Dann wird nicht gelöscht — und das ist kein Fehler, sondern der Normalfall
+        bei einem verschobenen Zeitfenster.
+        """
+        appointment = action.appointment
+        now = datetime.now(UTC)
+
+        if action.direction is SyncDirection.TANSS_TO_M365:
+            support_id = appointment.tanss_support_id
+            if not support_id:
+                link = self.state.get_link(appointment.key)
+                support_id = link.tanss_support_id if link else None
+            if not support_id:
+                return None, "keine TANSS-Kennung zur Nachfrage vorhanden"
+            if self.tanss.get_support(support_id) is not None:
+                return None, "in TANSS weiterhin vorhanden — keine Löschung"
+            return DeletionEvidence(
+                proof="tanss_404", probed_at=now, object_id=str(support_id),
+                trigger="tanss_deleted", http_status=404), ""
+
+        event_id = appointment.graph_event_id
+        if not event_id:
+            link = self.state.get_link(appointment.key)
+            event_id = link.graph_event_id if link else None
+        if not event_id:
+            return None, "keine Outlook-Kennung zur Nachfrage vorhanden"
+        if self.graph.get_event(user.mailbox, event_id, with_tanss_id=False) is not None:
+            return None, "in Outlook weiterhin vorhanden — keine Löschung"
+        return DeletionEvidence(
+            proof="graph_404", probed_at=now, object_id=event_id,
+            trigger="graph_deleted", http_status=404), ""
+
+    def _delete(self, action: SyncAction, user: UserMapping) -> bool:
+        """Führt eine Löschung aus — nach Freigabe durch den Wächter und mit Sicherung.
+
+        Gibt ``False`` zurück, wenn stattdessen eine Karenzzeit läuft: Beim Wandeln
+        einer Vormerkung in einen festen Termin löscht TANSS den alten Datensatz und
+        legt Sekunden später einen neuen an. Ohne das Fenster wäre das ein Löschbefehl
+        für einen Termin, der weiterlebt.
+        """
+        appointment = action.appointment
+        link = self.state.get_link(appointment.key)
+        if link is None:
+            log.warning("Löschung ohne Verknüpfung übersprungen: %s", appointment.key)
+            return False
+
+        evidence = self._evidence.get(id(action))
+        if evidence is None:
+            log.warning("Löschung ohne Nachweis übersprungen: %s", appointment.key)
+            return False
+
+        allowed = self.guard.authorize(action, evidence, link)
+        if not allowed.allowed:
+            log.info("Löschung abgelehnt (%s): %s", appointment.key, allowed.reason)
+            return False
+
+        side = action.target_side.value
+        pending = self.state.pending_deletion(appointment.key, side)
+
+        if pending is None:
+            self.guard.schedule(action, evidence, link)
+            log.info("Löschung von %s vorgemerkt — Karenzzeit %s s läuft",
+                     appointment.key, self.config.safety.deletion_grace_seconds)
+            return False
+
+        if int(pending["due_at"]) > int(datetime.now(UTC).timestamp()):
+            log.debug("Karenzzeit für %s läuft noch", appointment.key)
+            return False
+
+        self.guard.snapshot_before_delete(appointment, side, evidence.trigger)
+
+        if action.direction is SyncDirection.M365_TO_TANSS:
+            self.tanss.delete_support(appointment.tanss_support_id)
+        else:
+            # is_organizer vergleicht gegen appointment.mailbox - ist es nicht
+            # gesetzt, waere jede Loeschung faelschlich "nicht Organisator" und
+            # die Warnung vor Absagemails bliebe aus.
+            appointment.mailbox = appointment.mailbox or user.mailbox
+            self.graph.delete_event(
+                user.mailbox, appointment.graph_event_id,
+                is_organizer=appointment.is_organizer,
+                has_external_attendees=bool(
+                    appointment.external_attendees(self.config.own_mail_domains)))
+
+        self.state.mark_deletion_executed(int(pending["id"]))
+        self.state.set_link_state(appointment.key, "deleted")
+        return True
+
+    # ------------------------------------------------------- Outlook -> TANSS
+
+    def _create_in_tanss(self, action: SyncAction, user: UserMapping) -> None:
+        """Einen in Outlook entstandenen Termin in TANSS anlegen.
+
+        ``prevent_notification=True`` unterdrückt die TANSS-interne Benachrichtigung:
+        Die Teilnehmer haben ihre Einladung bereits aus Outlook: eine zweite aus TANSS
+        wäre für dieselbe Sache die zweite Mail.
+        """
+        appointment = action.appointment
+        appointment.employee_id = appointment.employee_id or user.tanss_employee_id
+        if not appointment.company_id:
+            appointment.company_id = self.company.resolve(appointment)
+
+        defaults = self.config.defaults_for(user.tanss_employee_id)
+        if appointment.support_type_id is None:
+            appointment.support_type_id = defaults.support_type_id
+
+        appointment.origin = "OUTLOOK"
+        appointment.is_internal = defaults.internal
+
+        # Der Betreff traegt in Outlook das Firmensuffix - in TANSS gehoert es nicht hin.
+        appointment.subject = self.subject.to_tanss(appointment.subject)
+
+        write = self.tanss_mapper.to_write(
+            appointment, for_update=False,
+            own_company_id=self.config.tanss.own_company_id,
+            graph_response=appointment.own_response)
+        created = self.tanss.create_support(write, prevent_notification=True)
+
+        appointment.tanss_support_id = created.id
+        link = LinkRecord.for_new(appointment, user)
+        link.tanss_support_id = created.id
+        link.graph_event_id = appointment.graph_event_id
+        after = self.tanss_mapper.to_appointment(created, user.mailbox,
+                                                 appointment.key.uid)
+        link.last_hash_tanss = fingerprint(after)
+        link.last_hash_graph = fingerprint(appointment)
+        link.last_seen_at = datetime.now(UTC)
+        self.echo.mark_written(link, "tanss", link.last_hash_tanss)
+        self.state.upsert_link(link)
+
+        # Unsere Kennung an den Outlook-Termin, damit er auch ohne lokale Datenbank
+        # wiederzufinden ist.
+        try:
+            self.graph.set_tanss_id(user.mailbox, appointment.graph_event_id, created.id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Kennung am Outlook-Termin nicht gesetzt: %s. Der TANSS-Termin "
+                        "ist angelegt und verknüpft.", exc)
+
+    def _update_in_tanss(self, action: SyncAction, user: UserMapping) -> None:
+        """Änderungen aus Outlook nach TANSS übertragen.
+
+        Der vorhandene Stand wird zuerst gelesen — ``metaInfos`` werden in TANSS
+        **ersetzt**, nicht ergänzt. Wer sie ohne den Bestand schreibt, löscht die
+        Kopplung und alles andere gleich mit.
+        """
+        appointment = action.appointment
+        if not appointment.tanss_support_id:
+            log.warning("Update ohne Support-Kennung übersprungen: %s", appointment.key)
+            return
+
+        current = self.tanss.get_support(appointment.tanss_support_id)
+        if current is None:
+            # Kein Loeschnachweis an dieser Stelle - nur nichts zu aktualisieren.
+            log.info("Support %s nicht mehr vorhanden — Änderung verworfen",
+                     appointment.tanss_support_id)
+            return
+
+        appointment.subject = self.subject.to_tanss(appointment.subject)
+        appointment.employee_id = appointment.employee_id or user.tanss_employee_id
+
+        write = self.tanss_mapper.to_write(
+            appointment, for_update=True, existing_meta=current.meta_infos,
+            own_company_id=self.config.tanss.own_company_id,
+            graph_response=appointment.own_response)
+
+        try:
+            updated = self.tanss.update_support(appointment.tanss_support_id, write)
+        except ChangesDiscardedError:
+            # Serverauskunft "nicht mehr dein Objekt" - etwa nach Wandlung in eine
+            # Leistung. Das ist eine Entkopplung, keine Loeschung.
+            log.info("TANSS hat die Änderung an %s verworfen — Kopplung wird beendet",
+                     appointment.tanss_support_id)
+            self.state.set_link_state(appointment.key, "detached")
+            return
+
+        link = (self.state.get_link(appointment.key)
+                or LinkRecord.for_new(appointment, user))
+        after = self.tanss_mapper.to_appointment(updated, user.mailbox,
+                                                 appointment.key.uid)
+        link.last_hash_tanss = fingerprint(after)
+        link.last_hash_graph = fingerprint(appointment)
+        link.last_seen_at = datetime.now(UTC)
+        self.echo.mark_written(link, "tanss", link.last_hash_tanss)
+        self.state.upsert_link(link)
+
+    def _detach(self, action: SyncAction, user: UserMapping) -> None:
+        """Kopplung beenden — **ohne** auf einer der beiden Seiten etwas zu löschen.
+
+        Beide Termine bleiben bestehen. Sie gehen sich ab jetzt nur nichts mehr an.
+        """
+        log.info("Kopplung %s wird beendet: %s", action.appointment.key, action.reason)
+        self.state.set_link_state(action.appointment.key, "detached")
 
     def _write_back_coupling(self, appointment) -> None:
         if not appointment.tanss_support_id:
