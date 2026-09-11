@@ -679,6 +679,14 @@ class SyncEngine:
         """
         if appointment.key.travel_role != "main":
             return
+        if appointment.kind.is_absence:
+            # Urlaub, Krankheit und Abwesenheit haengen an einem Urlaubsantrag
+            # (vacation_request_id) und sind ueber die Support-Route nicht
+            # schreibbar - TANSS antwortet mit "Objekt nicht gefunden", obwohl
+            # get_support den Datensatz liefert. Der Versuch ist nicht bloss
+            # erfolglos, sondern aussichtslos, und wiederholte sich bei jedem
+            # Durchlauf. Die Kopplung steht ohnehin lokal.
+            return
         if not appointment.tanss_support_id:
             return
         current = self.tanss.get_support(appointment.tanss_support_id)
