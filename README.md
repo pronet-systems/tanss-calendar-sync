@@ -438,6 +438,10 @@ tanss-sync token check-rotation       Trockentest der Erneuerungsfähigkeit
 
 tanss-sync webhooks list              Ereignisregeln anzeigen, fremde markiert
 tanss-sync webhooks check-tanssx      Läuft eine fremde Terminsynchronisation?
+tanss-sync webhooks export <datei>    Regeln sichern (mit Rückrufadressen)
+tanss-sync webhooks import <datei>    Gesicherte Regeln wieder anlegen
+tanss-sync webhooks detach --user <id>   Regeln eines Mitarbeiters entfernen,
+                                         vorher automatisch sichern
 tanss-sync webhooks cleanup           Überzählige Regeln entfernen
 tanss-sync webhooks sync              Eigene Regeln abgleichen (nur bei mode "push")
 

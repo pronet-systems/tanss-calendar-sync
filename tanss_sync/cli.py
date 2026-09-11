@@ -940,6 +940,177 @@ def webhooks_check_foreign(config: ConfigOpt = None) -> None:
         raise typer.Exit(1)
 
 
+@webhooks_app.command("export")
+def webhooks_export(
+    datei: str,
+    config: ConfigOpt = None,
+    user_id: Annotated[int | None, typer.Option(
+        "--user", help="Nur die Regeln dieses Mitarbeiters sichern")] = None,
+) -> None:
+    """Ereignisregeln in eine Datei sichern. Lesend.
+
+    Gesichert wird **unverändert**, was TANSS liefert — samt Rückrufadresse mitsamt
+    ihrer Kennung. Genau die macht die Regel wiederherstellbar: Ohne sie wüsste das
+    Zielsystem nicht, welcher Mitarbeiter gemeint ist.
+    """
+    from pathlib import Path
+
+    with _runtime(config, with_graph=False) as rt:
+        regeln = rt.tanss.raw_event_rules()
+        if user_id is not None:
+            regeln = [r for r in regeln
+                      if user_id in [e.get("employeeId") for e in r.get("employees", [])]]
+
+        if not regeln:
+            console.print("[dim]Keine passenden Regeln gefunden — nichts gesichert.[/dim]")
+            return
+
+        ziel = Path(datei).expanduser()
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        ziel.write_text(json.dumps(regeln, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+
+        console.print(f"[green]{len(regeln)} Regeln gesichert[/green] nach "
+                      f"[bold]{ziel}[/bold]")
+        for r in regeln:
+            mitarbeiter = ", ".join(str(e.get("employeeId"))
+                                    for e in r.get("employees", [])) or "alle"
+            console.print(f"  {r.get('id'):>3}  {r.get('name') or 'ohne Namen'}  "
+                          f"(Mitarbeiter {mitarbeiter}, "
+                          f"{len(r.get('triggerTypes', []))} Auslöser)")
+        console.print("[dim]Zurückholen mit: tanss-sync webhooks import "
+                      f"{ziel}[/dim]")
+
+
+@webhooks_app.command("import")
+def webhooks_import(datei: str, config: ConfigOpt = None,
+                    dry_run: DryRun = False) -> None:
+    """Gesicherte Ereignisregeln wieder anlegen. Schreibend.
+
+    Die Regeln bekommen **neue Kennungen** — inhaltlich sind sie dieselben. Vorhandene
+    Regeln werden dabei nicht angefasst; wer zweimal importiert, hat die Regel zweimal
+    und damit jede Meldung doppelt.
+    """
+    from pathlib import Path
+
+    quelle = Path(datei).expanduser()
+    if not quelle.exists():
+        err.print(f"[red]Datei nicht gefunden:[/red] {quelle}")
+        raise typer.Exit(2)
+
+    regeln = json.loads(quelle.read_text(encoding="utf-8"))
+    if not isinstance(regeln, list) or not regeln:
+        err.print("[red]Die Datei enthält keine Regeln.[/red]")
+        raise typer.Exit(2)
+
+    with _runtime(config, with_graph=False) as rt:
+        vorhanden = {r.get("id") for r in rt.tanss.raw_event_rules()}
+        for r in regeln:
+            mitarbeiter = ", ".join(str(e.get("employeeId"))
+                                    for e in r.get("employees", [])) or "alle"
+            hinweis = (" [yellow]— eine Regel mit dieser Kennung existiert noch[/yellow]"
+                       if r.get("id") in vorhanden else "")
+            console.print(f"  {r.get('id'):>3}  {r.get('name') or 'ohne Namen'}  "
+                          f"(Mitarbeiter {mitarbeiter}){hinweis}")
+
+        if dry_run:
+            console.print()
+            console.print(f"[bold]Probelauf[/bold] — {len(regeln)} Regeln würden neu "
+                          "angelegt, nichts wurde geändert.")
+            return
+
+        with write_lock(rt.config, "webhooks import"):
+            for r in regeln:
+                try:
+                    neu = rt.tanss.create_event_rule_raw(r)
+                    console.print(f"  [green]+[/green] {r.get('id')} → neue Kennung {neu}")
+                except Exception as exc:  # noqa: BLE001
+                    err.print(f"  [red]{r.get('id')} nicht angelegt:[/red] {exc}")
+
+
+@webhooks_app.command("detach")
+def webhooks_detach(
+    config: ConfigOpt = None,
+    user_id: Annotated[int | None, typer.Option(
+        "--user", help="Mitarbeiter, dessen Regeln entfernt werden")] = None,
+    rule_ids: Annotated[list[int] | None, typer.Option(
+        "--rule", help="Einzelne Regel (mehrfach angebbar)")] = None,
+    backup: Annotated[str | None, typer.Option(
+        "--backup", help="Wohin die Sicherung geschrieben wird")] = None,
+    dry_run: DryRun = False,
+) -> None:
+    """Ereignisregeln entfernen — **immer mit Sicherung**. Schreibend.
+
+    Der Weg, einen Mitarbeiter aus einer fremden Terminsynchronisation zu lösen: Eine
+    TANSS-Regel lässt sich nicht stilllegen, ``active: false`` wird beim Auslösen
+    ignoriert. Bleibt nur Löschen.
+
+    Gesichert wird **vor** dem Löschen und ohne Wahlmöglichkeit. Eine Regel trägt eine
+    Rückrufadresse mit eigener Kennung; ist sie weg und nicht gesichert, lässt sie sich
+    nicht rekonstruieren — auch nicht vom Betreiber des Zielsystems, ohne dort
+    nachzusehen.
+
+    Zurück mit ``tanss-sync webhooks import <datei>``.
+    """
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    if not (user_id or rule_ids):
+        err.print("[red]Bitte --user oder --rule angeben.[/red]")
+        raise typer.Exit(2)
+
+    with _runtime(config, with_graph=False) as rt:
+        alle = rt.tanss.raw_event_rules()
+        betroffen = [
+            r for r in alle
+            if (user_id is not None
+                and user_id in [e.get("employeeId") for e in r.get("employees", [])])
+            or (rule_ids and r.get("id") in rule_ids)
+        ]
+
+        if not betroffen:
+            console.print("[dim]Keine passenden Regeln gefunden.[/dim]")
+            return
+
+        for r in betroffen:
+            mitarbeiter = ", ".join(str(e.get("employeeId"))
+                                    for e in r.get("employees", [])) or "alle"
+            ziel = next((a.get("params", {}).get("url", "")
+                         for a in r.get("actions", []) if a.get("actionType") == "WEBHOOK"),
+                        "")
+            console.print(f"  {r.get('id'):>3}  {r.get('name') or 'ohne Namen'}  "
+                          f"(Mitarbeiter {mitarbeiter}, "
+                          f"{len(r.get('triggerTypes', []))} Auslöser)")
+            if ziel:
+                console.print(f"       → {ziel[:70]}")
+
+        if dry_run:
+            console.print()
+            console.print(f"[bold]Probelauf[/bold] — {len(betroffen)} Regeln würden "
+                          "gesichert und entfernt, nichts wurde geändert.")
+            return
+
+        stempel = _dt.now().strftime("%Y%m%d-%H%M%S")
+        pfad = Path(backup or f"webhooks-{stempel}.json").expanduser()
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        pfad.write_text(json.dumps(betroffen, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        console.print()
+        console.print(f"[green]Gesichert[/green] nach [bold]{pfad}[/bold]")
+
+        with write_lock(rt.config, "webhooks detach"):
+            entfernt = 0
+            for r in betroffen:
+                try:
+                    rt.tanss.delete_event_rule(int(r["id"]))
+                    entfernt += 1
+                except Exception as exc:  # noqa: BLE001
+                    err.print(f"[red]Regel {r.get('id')} nicht entfernt:[/red] {exc}")
+
+        console.print(f"[green]{entfernt} Regeln entfernt.[/green]")
+        console.print(f"[dim]Zurückholen mit: tanss-sync webhooks import {pfad}[/dim]")
+
+
 @webhooks_app.command("cleanup")
 def webhooks_cleanup(
     config: ConfigOpt = None,

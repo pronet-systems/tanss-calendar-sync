@@ -205,3 +205,29 @@ class TanssRepository:
 
     def delete_event_rule(self, rule_id: int) -> None:
         self.client.delete(f"{TANSS_X_PREFIX}/tanssEvents/rules/{rule_id}")
+
+    def raw_event_rules(self) -> list[dict]:
+        """Die Regeln **unverändert**, wie TANSS sie liefert.
+
+        Für die Sicherung: Das Modell lässt Felder weg, die es nicht braucht — für ein
+        späteres Wiederanlegen zählt aber jedes. Eine Sicherung, die nur enthält, was
+        wir gerade auswerten, stellt nichts wieder her.
+        """
+        return list(self.client.put(f"{TANSS_X_PREFIX}/tanssEvents/rules", {}) or [])
+
+    def create_event_rule_raw(self, body: dict) -> int:
+        """Legt eine Regel aus einer gesicherten Fassung neu an.
+
+        Die Kennungen werden entfernt: ``id`` und die ``ruleId`` in den Unterobjekten
+        vergibt der Server. Bliebe die alte Kennung stehen, schriebe man entweder in
+        eine fremde Regel oder bekäme eine Abweisung.
+        """
+        payload = {k: v for k, v in body.items() if k != "id"}
+        for feld in ("assignments", "employees", "triggerTypes", "actions"):
+            eintraege = payload.get(feld) or []
+            payload[feld] = [
+                {k: v for k, v in eintrag.items() if k not in ("id", "ruleId")}
+                for eintrag in eintraege
+            ]
+        created = self.client.post(f"{TANSS_X_PREFIX}/tanssEvents/rules", payload)
+        return int(created["id"])
