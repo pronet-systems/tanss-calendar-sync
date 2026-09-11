@@ -6,7 +6,12 @@ Prozess-Sperre und brechen ab, wenn ein anderer Lauf sie hält.
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
+import threading
+import time
+from datetime import UTC, datetime
 from typing import Annotated
 
 import typer
@@ -28,9 +33,14 @@ app = typer.Typer(
 users_app = typer.Typer(help="Mitarbeiter und Postfächer.", no_args_is_help=True)
 token_app = typer.Typer(help="Das TANSS-Dauertoken.", no_args_is_help=True)
 db_app = typer.Typer(help="Zustandsdatenbank.", no_args_is_help=True)
+webhooks_app = typer.Typer(help="TANSS-Event-Regeln (Meldewege).",
+                           no_args_is_help=True)
+
+log = logging.getLogger(__name__)
 app.add_typer(users_app, name="users")
 app.add_typer(token_app, name="token")
 app.add_typer(db_app, name="db")
+app.add_typer(webhooks_app, name="webhooks")
 
 console = Console()
 err = Console(stderr=True)
@@ -193,6 +203,166 @@ def sync_cmd(
         else:
             with write_lock(rt.config, "sync"):
                 run()
+
+
+@app.command("setup")
+def setup_cmd(
+    config: ConfigOpt = None,
+    restart: Annotated[bool, typer.Option(
+        "--restart", help="Angefangene Einrichtung verwerfen und von vorn beginnen"
+    )] = False,
+) -> None:
+    """Geführte Ersteinrichtung. Schreibend.
+
+    Jeder Schritt prüft sein Ergebnis gegen die echte Gegenstelle, bevor er als
+    erledigt gilt — eine Konfiguration, die erst im Betrieb auffliegt, ist schlimmer
+    als gar keine. Der Fortschritt wird nach jedem Schritt gespeichert; ein Abbruch
+    kostet keine bereits erledigte Arbeit.
+    """
+    from .setup.prompts import Asker
+    from .setup.wizard import SetupWizard
+
+    store = ConfigStore.discover(config)
+    if store.exists():
+        console.print(f"Es gibt bereits eine Konfiguration: [bold]{store.path}[/bold]")
+        if not typer.confirm("Wirklich neu einrichten und sie überschreiben?",
+                             default=False):
+            raise typer.Exit(0)
+    if restart:
+        store.clear_partial()
+
+    console.print("[bold]Einrichtung des Terminabgleichs[/bold]")
+    result = SetupWizard(store, Asker()).run()
+    if result is None:
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(f"[green]Fertig.[/green] Konfiguration: [bold]{store.path}[/bold]")
+    console.print("Nächste Schritte:")
+    console.print("  1. [bold]tanss-sync users discover[/bold] — Postfächer zuordnen")
+    console.print("  2. [bold]tanss-sync users enable <kennung>[/bold] — mit **einem** "
+                  "Mitarbeiter beginnen")
+    console.print("  3. [bold]tanss-sync sync --once --dry-run[/bold] — ansehen, was "
+                  "geschähe")
+    console.print("  4. [bold]tanss-sync doctor[/bold] — alles noch einmal prüfen")
+
+
+@app.command("run")
+def run_cmd(config: ConfigOpt = None) -> None:
+    """Dauerbetrieb — das Kommando, das der Systemdienst ausführt. Schreibend.
+
+    Läuft, bis der Dienst beendet wird. Ein ``SIGTERM`` aus ``systemctl stop`` wird
+    abgewartet: Der laufende Durchlauf wird zu Ende geführt, statt mitten in einem
+    Schreibvorgang abzubrechen.
+
+    Ein Fehler in einem Durchlauf beendet den Dienst **nicht**. Eine TANSS-Instanz im
+    Wartungsfenster oder ein kurzer Netzausfall darf keinen Neustart von Hand
+    erfordern; sichtbar wird beides über ``health`` und das Protokoll.
+    """
+    import signal
+
+    from .sync.engine import SyncEngine
+
+    stopping = threading.Event()
+
+    def request_stop(signum: int, _frame: object) -> None:
+        log.info("Signal %s empfangen — der laufende Durchlauf wird beendet", signum)
+        stopping.set()
+
+    for name in ("SIGTERM", "SIGINT"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), request_stop)
+
+    with _runtime(config) as rt:
+        if rt.graph is None:
+            err.print("[red]Ohne Microsoft-Zugang ist kein Abgleich möglich.[/red]")
+            raise typer.Exit(2)
+
+        interval = rt.config.sync.interval_seconds
+        console.print(f"[bold]Dauerbetrieb gestartet[/bold] — Abgleich alle "
+                      f"{interval} s. Beenden mit Strg-C.")
+        if rt.config.sync.dry_run:
+            console.print("[yellow]dry_run steht in der Konfiguration — "
+                          "es wird nichts geschrieben.[/yellow]")
+
+        engine = SyncEngine(rt.config, rt.tanss, rt.graph, rt.state)
+        last_discovery = 0.0
+        discovery_every = rt.config.user_discovery.interval_minutes * 60
+
+        with write_lock(rt.config, "run"):
+            while not stopping.is_set():
+                started = time.monotonic()
+                try:
+                    _maybe_rotate_token(rt)
+                    if (rt.config.user_discovery.mode != "off"
+                            and started - last_discovery >= discovery_every):
+                        last_discovery = started
+                        _run_discovery(rt)
+
+                    report = engine.run_once()
+                    if report.aborted_reason:
+                        log.error("Durchlauf angehalten: %s", report.aborted_reason)
+                    else:
+                        log.info("Durchlauf beendet: %s", report.summary())
+                except Exception:
+                    # Ein Fehler beendet den Dienst nicht - siehe Beschreibung oben.
+                    log.exception("Durchlauf gescheitert")
+
+                # Die Wartezeit zaehlt ab dem Start, nicht ab dem Ende: Sonst
+                # verschoebe sich der Takt mit jeder langen Runde weiter nach hinten.
+                rest = max(1.0, interval - (time.monotonic() - started))
+                stopping.wait(rest)
+
+        console.print("[bold]Dauerbetrieb beendet.[/bold]")
+
+
+def _maybe_rotate_token(rt) -> None:
+    """Erneuert das TANSS-Token, bevor es abläuft.
+
+    Das Token stellt seinen eigenen Nachfolger aus — Zugangsdaten braucht es dafür
+    nicht. Bleibt die Erneuerung aus, steht der Dienst irgendwann ohne Vorwarnung
+    still. Das neue Token wird gegengetestet; besteht es den Test nicht, bleibt das
+    alte aktiv, denn es ist ja noch gültig.
+    """
+    try:
+        result = rt.auth.rotate_if_needed(
+            rt.tanss.client,
+            before_days=rt.config.tanss.rotate_before_days,
+            verify=lambda candidate: _token_works(rt, candidate))
+        if result.rotated:
+            log.info("TANSS-Token erneuert, gültig bis %s", result.new_expires_at)
+        elif result.error:
+            log.warning("Token nicht erneuert: %s (%s)", result.reason, result.error)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Token-Erneuerung fehlgeschlagen: %s", exc)
+
+
+def _token_works(rt, candidate: str) -> bool:
+    """Gegentest mit einem eigenen Client — das laufende Token bleibt unangetastet."""
+    from .tanss.client import TANSS_X_PREFIX, TanssClient
+
+    probe = TanssClient(rt.config.tanss.api_base, _FixedToken(candidate),
+                        timeout=rt.config.tanss.timeout_seconds,
+                        verify_tls=rt.config.tanss.verify_tls)
+    try:
+        probe.get(f"{TANSS_X_PREFIX}/technicians")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        probe.close()
+
+
+def _run_discovery(rt) -> None:
+    try:
+        directory = UserDirectory(rt.tanss, rt.graph, rt.config,
+                                  foreign_sync_employees=_foreign_sync_employees(rt))
+        report = directory.refresh(dry_run=False)
+        if report.added or report.retired:
+            rt.store.save(rt.config)
+            log.info("Verzeichnisabgleich: %s", report.describe())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Verzeichnisabgleich fehlgeschlagen: %s", exc)
 
 
 def _print_actions(state, limit: int = 60) -> None:
@@ -394,23 +564,9 @@ def token_check_rotation(config: ConfigOpt = None) -> None:
 def token_rotate(config: ConfigOpt = None) -> None:
     """Erneuerung sofort auslösen. Schreibend."""
     with _runtime(config, with_graph=False) as rt, write_lock(rt.config, "token rotate"):
-        def verify(candidate: str) -> bool:
-            from .tanss.client import TANSS_X_PREFIX, TanssClient
-
-            probe = TanssClient(rt.config.tanss.api_base,
-                                _FixedToken(candidate),
-                                timeout=rt.config.tanss.timeout_seconds,
-                                verify_tls=rt.config.tanss.verify_tls)
-            try:
-                probe.get(f"{TANSS_X_PREFIX}/technicians")
-                return True
-            except Exception:  # noqa: BLE001
-                return False
-            finally:
-                probe.close()
-
-        result = rt.auth.rotate_if_needed(rt.tanss.client, before_days=10_000,
-                                          verify=verify)
+        result = rt.auth.rotate_if_needed(
+            rt.tanss.client, before_days=10_000,
+            verify=lambda candidate: _token_works(rt, candidate))
         if result.rotated:
             console.print(f"[green]Erneuert.[/green] Gültig bis "
                           f"{result.new_expires_at:%d.%m.%Y}")
@@ -418,6 +574,390 @@ def token_rotate(config: ConfigOpt = None) -> None:
             err.print(f"[yellow]Nicht erneuert:[/yellow] {result.reason}")
             if result.error:
                 err.print(f"  {result.error}")
+
+
+# ------------------------------------------------------- Nachvollziehen, Wiederherstellen
+
+def _since_seconds(value: str | None) -> int | None:
+    """``7d``, ``48h`` oder ``30`` (Tage) — der Beginn des Zeitraums als Zeitstempel."""
+    if not value:
+        return None
+    raw = str(value).strip().lower()
+    faktor = {"d": 86400, "h": 3600, "m": 60}.get(raw[-1:], 86400)
+    zahl = raw[:-1] if raw[-1:] in "dhm" else raw
+    try:
+        return int(datetime.now(UTC).timestamp()) - int(zahl) * faktor
+    except ValueError as exc:
+        raise typer.BadParameter(f"Zeitraum nicht lesbar: {value}") from exc
+
+
+@app.command("history")
+def history_cmd(
+    config: ConfigOpt = None,
+    support: Annotated[int | None, typer.Option("--support", help="TANSS-Terminkennung")] = None,
+    event: Annotated[str | None, typer.Option("--event", help="Outlook-Terminkennung")] = None,
+    user_id: Annotated[int | None, typer.Option("--user", help="Mitarbeiterkennung")] = None,
+    since: Annotated[str | None, typer.Option("--since", help="Zeitraum, etwa 7d")] = None,
+    limit: int = 50,
+) -> None:
+    """Was mit einem Termin oder einem Mitarbeiter geschehen ist. Lesend.
+
+    Serien-Occurrences haben in TANSS die Kennung 0 — für sie taugt ``--support``
+    nicht; dort hilft ``--user`` zusammen mit einem Zeitraum.
+    """
+    if not any((support, event, user_id)):
+        err.print("[red]Bitte --support, --event oder --user angeben.[/red]")
+        raise typer.Exit(2)
+
+    with _runtime(config, with_graph=False) as rt:
+        wo, werte = [], []
+        if support:
+            wo.append("tanss_support_id = ?")
+            werte.append(support)
+        if event:
+            wo.append("graph_event_id = ?")
+            werte.append(event)
+        if user_id:
+            wo.append("employee_id = ?")
+            werte.append(user_id)
+        ab = _since_seconds(since)
+        if ab:
+            wo.append("ts >= ?")
+            werte.append(ab)
+
+        rows = rt.state.connect().execute(
+            "SELECT ts, operation, outcome, side, reason, error FROM audit "
+            f"WHERE {' AND '.join(wo)} ORDER BY id DESC LIMIT ?",
+            (*werte, limit)).fetchall()
+
+        if not rows:
+            console.print("[dim]Kein Eintrag gefunden.[/dim]")
+            return
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Wann")
+        table.add_column("Was")
+        table.add_column("Seite")
+        table.add_column("Ergebnis")
+        table.add_column("Begründung")
+        for row in reversed(rows):
+            wann = datetime.fromtimestamp(row["ts"], UTC).astimezone()
+            table.add_row(f"{wann:%d.%m.%Y %H:%M}", row["operation"], row["side"],
+                          row["outcome"], row["reason"] or row["error"] or "")
+        console.print(table)
+
+
+@app.command("deleted")
+def deleted_cmd(
+    config: ConfigOpt = None,
+    since: Annotated[str | None, typer.Option("--since", help="Zeitraum, etwa 30d")] = "30d",
+    limit: int = 50,
+) -> None:
+    """Was wurde wann und warum gelöscht. Lesend.
+
+    Vor jeder Löschung wird gesichert. Diese Liste ist der Weg zur Sicherung; mit der
+    Kennung daraus stellt ``restore`` den Termin wieder her.
+    """
+    with _runtime(config, with_graph=False) as rt:
+        ab = _since_seconds(since) or 0
+        rows = rt.state.connect().execute(
+            "SELECT id, deleted_at, side, trigger, mailbox, tanss_support_id, payload "
+            "FROM deleted_backup WHERE deleted_at >= ? ORDER BY id DESC LIMIT ?",
+            (ab, limit)).fetchall()
+
+        if not rows:
+            console.print("[dim]In diesem Zeitraum wurde nichts gelöscht.[/dim]")
+            return
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Sicherung", justify="right")
+        table.add_column("Wann")
+        table.add_column("Seite")
+        table.add_column("Anlass")
+        table.add_column("Termin")
+        for row in rows:
+            wann = datetime.fromtimestamp(row["deleted_at"], UTC).astimezone()
+            try:
+                betreff = (json.loads(row["payload"]) or {}).get("subject", "")
+            except json.JSONDecodeError:
+                betreff = ""
+            table.add_row(str(row["id"]), f"{wann:%d.%m.%Y %H:%M}", row["side"],
+                          row["trigger"], betreff[:44])
+        console.print(table)
+        console.print("[dim]Wiederherstellen mit: tanss-sync restore <Sicherung>[/dim]")
+
+
+@app.command("restore")
+def restore_cmd(backup_id: int, config: ConfigOpt = None,
+                dry_run: DryRun = False) -> None:
+    """Einen gelöschten Termin wiederherstellen. Schreibend.
+
+    Wiederhergestellt wird auf der Seite, auf der gelöscht wurde, und ohne Teilnehmer —
+    ein Termin mit Teilnehmern löste beim Anlegen Einladungsmails aus, und eine
+    Wiederherstellung soll niemandem eine zweite Einladung schicken.
+    """
+    with _runtime(config) as rt:
+        row = rt.state.connect().execute(
+            "SELECT * FROM deleted_backup WHERE id = ?", (backup_id,)).fetchone()
+        if row is None:
+            err.print(f"[red]Keine Sicherung mit der Kennung {backup_id}.[/red]")
+            raise typer.Exit(2)
+
+        payload = json.loads(row["payload"])
+        wann = datetime.fromtimestamp(row["deleted_at"], UTC).astimezone()
+        console.print(f"Sicherung {backup_id}: [bold]{payload.get('subject','')}[/bold]")
+        console.print(f"  gelöscht am {wann:%d.%m.%Y %H:%M} auf Seite {row['side']}")
+        console.print(f"  Beginn {payload.get('start')} bis {payload.get('end')}")
+
+        if dry_run:
+            console.print("[bold]Probelauf[/bold] — nichts wurde angelegt.")
+            return
+
+        if row["side"] != "graph":
+            err.print("[yellow]Nur in Outlook gelöschte Termine lassen sich hier "
+                      "wiederherstellen.[/yellow]")
+            err.print("Ein TANSS-Datensatz wird über den Papierkorb in TANSS "
+                      "zurückgeholt.")
+            raise typer.Exit(2)
+
+        if rt.graph is None:
+            err.print("[red]Ohne Microsoft-Zugang ist keine Wiederherstellung "
+                      "möglich.[/red]")
+            raise typer.Exit(2)
+
+        with write_lock(rt.config, "restore"):
+            created = rt.graph.create_event(row["mailbox"], {
+                "subject": payload.get("subject") or "Wiederhergestellter Termin",
+                "body": {"contentType": "text", "content": payload.get("body") or ""},
+                "start": {"dateTime": payload["start"][:19], "timeZone": "UTC"},
+                "end": {"dateTime": payload["end"][:19], "timeZone": "UTC"},
+                "location": {"displayName": payload.get("location") or ""},
+            }, transaction_id=f"restore-{backup_id}")
+        console.print(f"[green]Wiederhergestellt[/green] als {created.id}")
+        console.print("[dim]Die Kopplung wurde bewusst nicht wiederhergestellt — "
+                      "prüfen Sie den Termin, bevor der nächste Abgleich läuft.[/dim]")
+
+
+@app.command("export-state")
+def export_state_cmd(config: ConfigOpt = None) -> None:
+    """Alle Verknüpfungen als JSON ausgeben — für Auswertung und Unterstützung. Lesend."""
+    with _runtime(config, with_graph=False) as rt:
+        rows = rt.state.connect().execute(
+            "SELECT * FROM links ORDER BY tanss_employee_id, uid").fetchall()
+        console.print_json(json.dumps([dict(r) for r in rows], ensure_ascii=False))
+
+
+@app.command("unlink")
+def unlink_cmd(
+    config: ConfigOpt = None,
+    user_id: Annotated[int | None, typer.Option("--user", help="Mitarbeiterkennung")] = None,
+    support: Annotated[int | None, typer.Option("--support", help="TANSS-Terminkennung")] = None,
+    dry_run: DryRun = False,
+) -> None:
+    """Kopplungen lösen. Beide Seiten bleiben **unverändert**. Schreibend.
+
+    Die Termine bleiben in TANSS und in Outlook vollständig bestehen — sie gehen sich
+    ab jetzt nur nichts mehr an. Es gibt keinen Weg, aus einem ``unlink`` eine Löschung
+    zu machen.
+    """
+    if not (user_id or support):
+        err.print("[red]Bitte --user oder --support angeben.[/red]")
+        raise typer.Exit(2)
+
+    with _runtime(config, with_graph=False) as rt:
+        wo = "tanss_employee_id = ?" if user_id else "tanss_support_id = ?"
+        wert = user_id if user_id else support
+        anzahl = rt.state.connect().execute(
+            f"SELECT COUNT(*) AS n FROM links WHERE {wo} AND state = 'linked'",
+            (wert,)).fetchone()["n"]
+
+        if not anzahl:
+            console.print("[dim]Keine passende Kopplung gefunden.[/dim]")
+            return
+
+        console.print(f"{anzahl} Kopplungen würden gelöst.")
+        if dry_run:
+            console.print("[bold]Probelauf[/bold] — nichts wurde geändert.")
+            return
+
+        with write_lock(rt.config, "unlink"):
+            rt.state.connect().execute(
+                f"UPDATE links SET state = 'detached' WHERE {wo} AND state = 'linked'",
+                (wert,))
+        console.print(f"[green]{anzahl} Kopplungen gelöst.[/green] "
+                      "Die Termine bleiben auf beiden Seiten bestehen.")
+
+
+# ---------------------------------------------------------------------- Webhooks
+
+def _webhooks(rt):
+    from .sync.webhooks import WebhookManager
+
+    return WebhookManager(rt.tanss,
+                          rt.config.push.callback_base_url if rt.config.push else "")
+
+
+@webhooks_app.command("list")
+def webhooks_list(config: ConfigOpt = None) -> None:
+    """Alle Event-Regeln, mit Kennzeichnung fremder Meldewege. Lesend."""
+    with _runtime(config, with_graph=False) as rt:
+        report = _webhooks(rt).inspect()
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Regel", justify="right")
+        table.add_column("Name")
+        table.add_column("Mitarbeiter")
+        table.add_column("Ziel")
+        table.add_column("Herkunft")
+        for rule in report.own + report.foreign:
+            eigen = rule in report.own
+            table.add_row(
+                str(rule.id), rule.name or "[dim]ohne Namen[/dim]",
+                ", ".join(str(e) for e in rule.employee_ids) or "[dim]alle[/dim]",
+                " / ".join(u[:52] for u in rule.webhook_urls),
+                "[green]eigen[/green]" if eigen else "[yellow]fremd[/yellow]")
+        console.print(table)
+
+        if report.without_webhook:
+            console.print(f"[dim]{len(report.without_webhook)} Regeln ohne Webhook — "
+                          "sie betreffen den Abgleich nicht.[/dim]")
+        if report.duplicates:
+            console.print()
+            console.print(f"[yellow]{len(report.duplicates)} doppelte Regeln.[/yellow] "
+                          "Jede davon feuert einzeln — derselbe Vorgang wird also "
+                          "mehrfach gemeldet.")
+            console.print("Bereinigen mit: "
+                          "[bold]tanss-sync webhooks cleanup --dry-run[/bold]")
+
+
+@webhooks_app.command("check-tanssx")
+def webhooks_check_foreign(config: ConfigOpt = None) -> None:
+    """Läuft für einen Mitarbeiter eine andere Terminsynchronisation? Lesend."""
+    with _runtime(config, with_graph=False) as rt:
+        report = _webhooks(rt).inspect()
+        betroffen = report.foreign_employees
+
+        if not betroffen:
+            console.print("[green]Keine fremden Meldewege gefunden.[/green]")
+            console.print(
+                "[dim]Das ist allerdings kein Beweis: Die Richtung Outlook nach TANSS "
+                "kommt ohne Event-Regel aus. Eine fremde Synchronisation kann also "
+                "laufen, ohne hier aufzutauchen.[/dim]")
+            return
+
+        console.print(f"[yellow]Für {len(betroffen)} Mitarbeiter laufen fremde "
+                      "Meldewege.[/yellow]")
+        for employee_id in sorted(betroffen):
+            entry = rt.config.user(employee_id)
+            name = entry.tanss_email if entry else "nicht zugeordnet"
+            aktiv = " [red]— bei uns aktiviert[/red]" if entry and entry.enabled else ""
+            console.print(f"  {employee_id:>5}  {name}{aktiv}")
+        console.print()
+        console.print("Zwei Systeme, die dieselben Kalender abgleichen, schreiben "
+                      "gegeneinander und erzeugen Duplikate.")
+        raise typer.Exit(1)
+
+
+@webhooks_app.command("cleanup")
+def webhooks_cleanup(
+    config: ConfigOpt = None,
+    dry_run: DryRun = False,
+    include_foreign: Annotated[bool, typer.Option(
+        "--include-foreign",
+        help="Auch überzählige Regeln einer fremden Terminsynchronisation entfernen"
+    )] = False,
+) -> None:
+    """Doppelte Regeln entfernen. Je Mitarbeiter und Dienst bleibt die älteste. Schreibend.
+
+    Melden mehrere Regeln denselben Mitarbeiter an denselben Dienst, feuert jede
+    einzeln — derselbe Vorgang wird dann mehrfach gemeldet.
+
+    Fremde Regeln werden **nur mit** ``--include-foreign`` angefasst. Sie gehören einem
+    anderen System; sie zu entfernen greift in dessen Betrieb ein. Die jeweils älteste
+    bleibt immer stehen, das fremde System arbeitet also weiter — nur eben einmal statt
+    dreimal je Vorgang.
+    """
+    with _runtime(config, with_graph=False) as rt:
+        manager = _webhooks(rt)
+        report = manager.inspect()
+
+        if not report.duplicates:
+            console.print("[green]Keine doppelten Regeln.[/green]")
+            return
+
+        zu_entfernen = []
+        for group in report.groups:
+            bleibt = min(r.id for r in group.rules)
+            herkunft = "[yellow]fremd[/yellow]" if group.is_foreign else "eigen"
+            console.print(f"Mitarbeiter {group.employee_id} nach {group.url[:46]} "
+                          f"({herkunft})")
+            console.print(f"  behalten: {bleibt}   überzählig: "
+                          + ", ".join(str(r.id) for r in group.duplicates))
+            if group.is_foreign and not include_foreign:
+                console.print("  [dim]übersprungen — gehört einer fremden "
+                              "Terminsynchronisation[/dim]")
+                continue
+            zu_entfernen.extend(group.duplicates)
+
+        console.print()
+        if not zu_entfernen:
+            console.print("[yellow]Alle Duplikate gehören einer fremden "
+                          "Terminsynchronisation.[/yellow]")
+            console.print("Mitentfernen mit: [bold]tanss-sync webhooks cleanup "
+                          "--include-foreign --dry-run[/bold]")
+            return
+
+        if dry_run:
+            console.print(f"[bold]Probelauf[/bold] — {len(zu_entfernen)} Regeln würden "
+                          "entfernt, nichts wurde geändert.")
+            return
+
+        with write_lock(rt.config, "webhooks cleanup"):
+            entfernt = 0
+            for rule in zu_entfernen:
+                try:
+                    manager.remove(rule)
+                    entfernt += 1
+                except Exception as exc:  # noqa: BLE001
+                    err.print(f"[red]Regel {rule.id} nicht entfernt:[/red] {exc}")
+        console.print(f"[green]{entfernt} überzählige Regeln entfernt.[/green]")
+
+
+@webhooks_app.command("sync")
+def webhooks_sync(config: ConfigOpt = None, dry_run: DryRun = False) -> None:
+    """Eigene Regeln abgleichen — je aktiviertem Mitarbeiter eine. Schreibend.
+
+    Nur im Push-Betrieb sinnvoll: Im Poll-Betrieb fragt der Dienst selbst nach und
+    braucht keinen Meldeweg.
+    """
+    with _runtime(config, with_graph=False) as rt:
+        if rt.config.push is None:
+            err.print("[red]Ohne push-Abschnitt gibt es keine Rückrufadresse.[/red]")
+            err.print("Eigene Regeln sind nur bei sync.mode push nötig.")
+            raise typer.Exit(2)
+
+        manager = _webhooks(rt)
+        report = manager.inspect()
+        aktiv = [u.tanss_employee_id for u in rt.config.users if u.enabled]
+        fehlend = manager.missing_for(aktiv, report)
+
+        if not fehlend:
+            console.print(f"[green]Alle {len(aktiv)} aktivierten Mitarbeiter haben "
+                          "eine eigene Regel.[/green]")
+            return
+
+        console.print("Fehlende Regeln: " + ", ".join(str(e) for e in fehlend))
+        if dry_run:
+            console.print("[bold]Probelauf[/bold] — nichts wurde angelegt.")
+            return
+
+        with write_lock(rt.config, "webhooks sync"):
+            for employee_id in fehlend:
+                try:
+                    rule_id = manager.create_for(employee_id)
+                    console.print(f"  [green]+[/green] Regel {rule_id} für {employee_id}")
+                except Exception as exc:  # noqa: BLE001
+                    err.print(f"  [red]Regel für {employee_id} nicht angelegt:[/red] {exc}")
 
 
 # ---------------------------------------------------------------------- Datenbank

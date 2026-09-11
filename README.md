@@ -418,28 +418,38 @@ tanss-sync sync --once --dry-run      Zeigt geplante Änderungen, schreibt nicht
 tanss-sync run                        Dauerbetrieb (wird vom Dienst verwendet)
 tanss-sync status                     Letzter Lauf, Fehler, Warteschlange
 
+tanss-sync health                     Kurzstatus mit Exit-Code für die Überwachung
+tanss-sync ack                        Not-Aus quittieren (hebt die Sperre nicht auf)
+
 tanss-sync users list                 Mitarbeiter, Postfächer und Status
 tanss-sync users discover             Verzeichnisabgleich sofort ausführen
 tanss-sync users enable <id>          Benutzer aktivieren
 tanss-sync users disable <id>         Benutzer deaktivieren (löscht keine Termine)
-tanss-sync users map <id> <postfach>  Zuordnung von Hand setzen
 
 tanss-sync token status               Restlaufzeit und nächster Erneuerungstermin
 tanss-sync token rotate               Erneuerung sofort auslösen
-tanss-sync token set                  Token hinterlegen
+tanss-sync token check-rotation       Trockentest der Erneuerungsfähigkeit
 
-tanss-sync webhooks list              Ereignisregeln anzeigen
-tanss-sync webhooks sync              Eigene Regeln abgleichen
-tanss-sync webhooks cleanup           Doppelte Regeln entfernen
+tanss-sync webhooks list              Ereignisregeln anzeigen, fremde markiert
+tanss-sync webhooks check-tanssx      Läuft eine fremde Terminsynchronisation?
+tanss-sync webhooks cleanup           Überzählige Regeln entfernen
+tanss-sync webhooks sync              Eigene Regeln abgleichen (nur bei mode "push")
 
 tanss-sync history --support <id>     Vollständige Historie eines Termins
 tanss-sync history --user <id>        Historie eines Benutzers
-tanss-sync deleted list               Was wurde wann und warum gelöscht
-tanss-sync restore <id>               Gelöschten Termin wiederherstellen
-
-tanss-sync logs tail                  Betriebsprotokoll verfolgen
+tanss-sync deleted                    Was wurde wann und warum gelöscht
+tanss-sync restore <sicherung>        Gelöschten Termin wiederherstellen
 tanss-sync unlink --user <id>         Kopplung lösen, beide Seiten unverändert lassen
+tanss-sync export-state               Alle Verknüpfungen als JSON
+
+tanss-sync db check                   Integrität der Zustandsdatenbank prüfen
+tanss-sync db backup <pfad>           Konsistente Sicherung ziehen
+tanss-sync db vacuum                  Zustandsdatenbank verdichten
 ```
+
+Jedes Kommando ist entweder lesend oder schreibend; `--help` sagt es bei jedem dazu.
+Schreibende Kommandos nehmen eine Prozesssperre und brechen ab, solange ein anderer
+Lauf sie hält.
 
 `--dry-run` sollte vor jeder Inbetriebnahme und nach jeder Konfigurationsänderung verwendet
 werden. Es ist die einzige Möglichkeit, die Auswirkungen einer Einstellung zu sehen, bevor
