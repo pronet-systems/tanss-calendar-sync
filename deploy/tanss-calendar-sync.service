@@ -47,6 +47,14 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 
+# ProtectSystem=strict legt /run schreibgeschuetzt. Ohne RuntimeDirectory
+# scheitert ProcessLock.acquire() beim Anlegen von state.lock_path
+# (util/lock.py) und der Dienst kommt nach einem Reboot nicht hoch. systemd legt
+# das Verzeichnis hier selbst an, mit dem Dienstbenutzer als Eigentuemer,
+# und raeumt es beim Stoppen wieder ab.
+RuntimeDirectory=tanss-calendar-sync
+RuntimeDirectoryMode=0750
+
 # Nur diese Pfade sind beschreibbar.
 ReadWritePaths=/var/lib/tanss-calendar-sync /var/log/tanss-calendar-sync
 # Das Token-Verzeichnis muss beschreibbar sein, weil der Dienst sein
