@@ -130,6 +130,25 @@ class DeletionGuard:
 
     # ------------------------------------------------------------------ Stapel
 
+    def _alarm_beenden(self, scope: str, counted: int) -> None:
+        """Ein Not-Aus erlischt, sobald sein Anlass vorbei ist.
+
+        Freigegeben wurde bisher nur im Zweig ``allow_bulk`` — also nur, wenn ein Lauf
+        die Grenze erneut überschreitet. Stehen die Mengenbremsen wieder auf ihrem
+        Auslieferungswert 0, wird dieser Zweig nie mehr erreicht, und der Alarm bleibt
+        für immer stehen: ``status`` und ``doctor`` melden ihn bei jedem Aufruf. Ein
+        Alarm, der immer schrillt, wird abgeschaltet und schützt dann gar nichts mehr.
+
+        Nur ``bulk_delete``: Dass in diesem Lauf nicht zu viel gelöscht wurde, sagt über
+        einen Not-Aus wegen zu vieler **Neuanlagen** nichts.
+        """
+        stop = self.state.active_emergency(scope)
+        if stop is None or stop.kind != "bulk_delete":
+            return
+        log.info("Not-Aus für %s erloschen: %d Löschvorgänge, wieder innerhalb der "
+                 "Grenzen", scope, counted)
+        self.state.release_emergency(stop.id, by="wieder im Rahmen")
+
     def check_batch(self, actions: list[SyncAction], linked_total: int, *,
                     scope: str, allow_bulk: bool = False,
                     run_id: int | None = None) -> BatchVerdict:
@@ -142,6 +161,7 @@ class DeletionGuard:
         """
         deletions = [a for a in actions if a.operation is SyncOperation.DELETE]
         if not deletions:
+            self._alarm_beenden(scope, 0)
             return BatchVerdict(True, "")
 
         counted = self._count_operations(deletions)
@@ -159,6 +179,7 @@ class DeletionGuard:
                          and linked_total >= self.policy.ratio_floor)
         over_ratio = ratio_applies and ratio > self.policy.max_delete_ratio
         if not (over_count or over_ratio):
+            self._alarm_beenden(scope, counted)
             return BatchVerdict(True, "", counted, self.policy.max_deletes_per_run)
 
         reason = (f"{counted} Löschvorgänge ({len(deletions)} Termine)"

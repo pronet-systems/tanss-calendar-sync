@@ -123,16 +123,27 @@ Das Skript richtet alles ein, was für den unbeaufsichtigten Betrieb nötig ist:
 | Verzeichnis | Inhalt | Rechte |
 |---|---|---|
 | `/opt/tanss-calendar-sync` | Anwendung | `root`, für den Dienst nur lesbar |
-| `/etc/tanss-calendar-sync` | Konfiguration, Token, Zertifikat | `0750`, Gruppe `tanss-sync` |
-| `/var/lib/tanss-calendar-sync` | Zustandsdatenbank `state.db` | `tanss-sync` |
+| `/etc/tanss-calendar-sync` | Konfiguration, Zertifikat | `0770`, Gruppe `tanss-sync` |
+| `/var/lib/tanss-calendar-sync` | Zustandsdatenbank `state.db`, Token | `tanss-sync` |
 | `/var/log/tanss-calendar-sync` | Protokolldateien | `tanss-sync` |
+| `/run/tanss-calendar-sync` | Sperrdatei, bei jedem Reboot neu | `tanss-sync` |
+
+Das Konfigurationsverzeichnis ist **gruppenschreibbar**, und das ist Absicht: Der Dienst
+schreibt seine eigene Konfiguration, wenn Benutzer aktiviert werden oder der
+Verzeichnisabgleich neue Mitarbeiter aufnimmt. Er ersetzt sie dabei über eine temporäre
+Datei daneben — das braucht Schreibrecht am Verzeichnis, nicht nur an der Datei.
+
+Der Preis gehört dazugesagt: Wer im Verzeichnis schreiben darf, darf dort auch umbenennen
+und löschen — der Dienstbenutzer kann also auch `graph-secret` und `graph.pem` austauschen.
+Das ist hinnehmbar, weil er sie ohnehin liest; es heißt aber, dass dieses Konto genauso zu
+behandeln ist wie die Zugangsdaten selbst.
 
 Das Skript ist **idempotent**: Zum Aktualisieren einfach erneut ausführen. Konfiguration,
 Token und Zustandsdatenbank bleiben dabei unangetastet.
 
 ### Neustartfestigkeit
 
-Drei Dinge sorgen dafür, dass der Dienst einen Reboot und Störungen übersteht:
+Sechs Dinge sorgen dafür, dass der Dienst einen Reboot und Störungen übersteht:
 
 1. **`WantedBy=multi-user.target`** in Verbindung mit `systemctl enable` — der Dienst wird
    bei jedem Systemstart automatisch mitgestartet.
@@ -145,6 +156,14 @@ Drei Dinge sorgen dafür, dass der Dienst einen Reboot und Störungen übersteht
    Dateisystemhierarchie schreibgeschützt, `/run` eingeschlossen. Ohne diesen Eintrag kann
    der Dienst seine Sperrdatei nicht anlegen und stirbt nach jedem Reboot sofort wieder.
    systemd legt das Verzeichnis beim Start selbst an und räumt es beim Stoppen ab.
+5. **`RuntimeDirectoryPreserve=yes`** — ohne das räumt systemd das Verzeichnis beim
+   Stoppen wieder ab, und ein Befehl von Hand als Dienstbenutzer scheitert daran, dass
+   `/run` nur root beschreiben darf. Nach einem Reboot ist es trotzdem leer, `/run` ist
+   ein tmpfs.
+6. **`/etc/tmpfiles.d/tanss-calendar-sync.conf`** — legt das Verzeichnis beim Systemstart
+   an, bevor der Dienst je gelaufen ist. Ohne den Eintrag entstünde es beim ersten Befehl
+   von Hand als `root`, und der Dienst käme anschließend nicht mehr an seine eigene
+   Sperrdatei.
 
 Prüfen lässt sich das so:
 
@@ -162,6 +181,7 @@ hat: Zuordnungen und Änderungsmarken liegen in `state.db`, es findet kein Volla
 ```bash
 sudo systemctl disable --now tanss-calendar-sync
 sudo rm /etc/systemd/system/tanss-calendar-sync.service
+sudo rm -f /etc/tmpfiles.d/tanss-calendar-sync.conf
 sudo systemctl daemon-reload
 sudo rm -rf /opt/tanss-calendar-sync
 # Konfiguration und Zustand bewusst separat, damit nichts versehentlich verloren geht:
@@ -236,17 +256,25 @@ Microsoft 365. Beide Kalender bleiben so, wie sie sind.
 ## TANSS vorbereiten
 
 1. **Recht vergeben.** Der Mitarbeiter, unter dessen Kennung der Dienst arbeitet, braucht das
-   Recht *„Darf API-Tokens für ext. Anbindungen erzeugen"*. Ohne dieses Recht kann der Dienst
-   sein Token nicht selbst erneuern und läuft nach Ablauf still aus.
+   Recht *„Administration: System API-Tokens für ext. Anbindungen und Schnittstellen
+   erzeugen"*. Ohne dieses Recht antwortet die Ausstellungsroute mit HTTP 403, der Dienst
+   kann sein Token nicht selbst erneuern und läuft nach Ablauf still aus. Es muss ein
+   Mitarbeiter der **eigenen** Firma sein — `ownState` liefert zu einem Kundenkontakt dessen
+   Firma als `defaultCompany`, und darauf liefen dann alle internen Termine.
 
 2. **Token erzeugen.** In der TANSS-Administration unter *API-Konfiguration* ein Token für
    eine externe Anbindung abrufen und hinterlegen:
 
    ```bash
-   sudo tee /etc/tanss-calendar-sync/token >/dev/null <<< 'Bearer <hier das Token einfuegen>'
-   sudo chmod 640 /etc/tanss-calendar-sync/token
-   sudo chown root:tanss-sync /etc/tanss-calendar-sync/token
+   sudo tee /var/lib/tanss-calendar-sync/token >/dev/null <<< 'Bearer <hier das Token einfuegen>'
+   sudo chown tanss-sync:tanss-sync /var/lib/tanss-calendar-sync/token
+   sudo chmod 600 /var/lib/tanss-calendar-sync/token
    ```
+
+   Der Ort ist nicht beliebig: Der Dienst erneuert das Token selbst und ersetzt die Datei
+   dabei über eine temporäre daneben. Das braucht Schreibrecht am **Verzeichnis**, und
+   `/var/lib/tanss-calendar-sync` gehört ihm. `0600` ist kein Vorschlag — `tanss-sync doctor`
+   beanstandet jedes Token, das andere Benutzer lesen können.
 
    Dieses Token wird **einmalig** benötigt. Danach erneuert der Dienst es selbstständig,
    lange bevor es abläuft.
@@ -305,7 +333,7 @@ Geheimnisse stehen **nicht** in der Datei, sondern werden referenziert:
 | Parameter | Standard | Bedeutung |
 |---|---|---|
 | `base_url` | — | Basisadresse der TANSS-API, z. B. `https://tanss.example.com/backend`. Ohne abschließenden Schrägstrich. |
-| `token_ref` | `file:/var/lib/tanss-calendar-sync/token` | Verweis auf das API-Token. Der Dienst schreibt hierhin auch das erneuerte Token. Beschreibbar sein muss dabei das **Verzeichnis**, nicht nur die Datei: Die Erneuerung legt eine temporäre Datei daneben und benennt sie um, damit nie ein halb geschriebenes Token entsteht. `/etc/tanss-calendar-sync` gehört `root` und ist für die Gruppe nur lesbar — ein Token dort lässt sich **nicht** erneuern, auch nicht mit `chmod 660` auf der Datei. |
+| `token_ref` | `file:/var/lib/tanss-calendar-sync/token` | Verweis auf das API-Token. Der Dienst schreibt hierhin auch das erneuerte Token. Beschreibbar sein muss dabei das **Verzeichnis**, nicht nur die Datei: Die Erneuerung legt eine temporäre Datei daneben und benennt sie um, damit nie ein halb geschriebenes Token entsteht. Deshalb liegt es unter `/var/lib/tanss-calendar-sync`, das dem Dienstbenutzer gehört. Ein `chmod` auf die Datei allein genügt nicht. |
 | `token_owner_employee_id` | — | Mitarbeiter-ID, unter der die Token-Erneuerung erfolgt. Dieser Mitarbeiter braucht das Recht zum Erzeugen von API-Tokens und muss aktiv bleiben. |
 | `rotate_before_days` | `60` | Ab welcher Restlaufzeit das Token erneuert wird. Der großzügige Vorlauf sorgt dafür, dass ein Problem lange vor dem Ablauf auffällt. |
 | `own_company_id` | wird ermittelt | Die eigene Firma. Termine ohne Kundenbezug werden ihr zugeordnet, da in TANSS jeder Termin eine Firma braucht. |
