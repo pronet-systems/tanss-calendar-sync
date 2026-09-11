@@ -279,7 +279,9 @@ class Reconciler:
 
     # ------------------------------------------------------------------ Löschungen
 
-    def deletion_candidates(self, pairs: list[Pair], user: UserMapping) -> ChangeSet:
+    def deletion_candidates(self, pairs: list[Pair], user: UserMapping, *,
+                            entfernte_haupttermine: frozenset[str] = frozenset()
+                            ) -> ChangeSet:
         """Termine, bei denen eine Löschung **möglich** ist — nicht erwiesen.
 
         Hier entsteht ausdrücklich nur ein Verdacht. Dass ein Termin in der Liste fehlt,
@@ -304,6 +306,11 @@ class Reconciler:
             p.tanss.key.uid for p in pairs
             if p.tanss is not None and p.tanss.key.travel_role == "main"
         }
+        # Zweiter, staerkerer Beleg: Der Haupttermin wurde bereits entfernt - mit
+        # Nachweis am Einzelobjekt, sonst stuende die Kopplung nicht auf "deleted".
+        # Er liegt dann naturgemaess nie vor, und ohne diese Auskunft blieben seine
+        # Fahrt-Bloecke dauerhaft im Kalender stehen: Anfahrt und Abfahrt ohne den
+        # Termin dazwischen.
 
         for pair in pairs:
             link = pair.link
@@ -315,7 +322,8 @@ class Reconciler:
                 if not user.direction.allows_to_m365():
                     continue
                 if (link.travel_role != "main"
-                        and link.uid not in gesehene_haupttermine):
+                        and link.uid not in gesehene_haupttermine
+                        and link.uid not in entfernte_haupttermine):
                     changes.skipped.append((
                         pair.graph,
                         "Fahrt-Block, dessen Haupttermin in diesem Lauf nicht vorlag — "

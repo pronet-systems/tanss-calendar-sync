@@ -194,7 +194,15 @@ class SyncEngine:
 
         # Loeschungen zuletzt - und nur die, fuer die der Nachweis am Einzelobjekt
         # gelingt. Alles andere faellt hier heraus und wird nie zu einer Aktion.
-        for candidate in self.reconciler.deletion_candidates(pairs, user).actions:
+        # Die Absagen gehoeren ins Protokoll. Ohne sie steht im Protokoll nichts,
+        # wo der Abgleich eine Loeschung erwogen und verworfen hat - und genau
+        # diese Stille verbarg, dass Fahrt-Bloecke nie zur Nachpruefung kamen.
+        loeschungen = self.reconciler.deletion_candidates(
+            pairs, user,
+            entfernte_haupttermine=frozenset(
+                self.state.removed_main_uids(user.tanss_employee_id)))
+        changes.skipped.extend(loeschungen.skipped)
+        for candidate in loeschungen.actions:
             proven, why = self._prove_deletion(candidate, user)
             if proven is None:
                 # Der Termin ist noch da. Eine etwa laufende Vormerkung wird

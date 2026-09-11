@@ -137,6 +137,21 @@ class StateStore:
         rows = self.connect().execute(sql, (employee_id,)).fetchall()
         return [LinkRecord.from_row(r) for r in rows]
 
+    def removed_main_uids(self, employee_id: int) -> set[str]:
+        """UIDs der Haupttermine, die dieser Dienst nachweislich entfernt hat.
+
+        Eine Fahrt-Zeile darf nur mitgehen, wenn ihr Haupttermin wirklich weg ist —
+        nicht schon dann, wenn er in einem Lauf fehlte. Der Zustand ``deleted``
+        entsteht ausschliesslich nach einer Loeschung mit Nachweis am Einzelobjekt
+        und ist damit genau die Auskunft, die dort fehlt.
+        """
+        rows = self.connect().execute(
+            "SELECT DISTINCT uid FROM links "
+            "WHERE tanss_employee_id=? AND travel_role='main' AND state='deleted'",
+            (employee_id,),
+        ).fetchall()
+        return {r["uid"] for r in rows}
+
     def count_links(self, employee_id: int) -> int:
         row = self.connect().execute(
             "SELECT COUNT(*) AS n FROM links WHERE tanss_employee_id=? AND state='linked'",
