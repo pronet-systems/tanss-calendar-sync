@@ -1,5 +1,8 @@
 # TANSS Calendar Sync
 
+**Outlook-Kalender und TANSS in beide Richtungen synchron halten — Open Source, für
+Systemhäuser und IT-Dienstleister.**
+
 Bidirektionaler Terminabgleich zwischen **TANSS** und **Microsoft 365**.
 Ein Kommandozeilenwerkzeug in Python, das als Dienst unter Linux läuft.
 
@@ -28,6 +31,7 @@ Mitarbeiters — und umgekehrt. Änderungen und Löschungen werden in beide Rich
 - [Betrieb](#betrieb)
 - [Protokollierung](#protokollierung)
 - [FAQ](#faq)
+- [Weitere TANSS-Werkzeuge](#weitere-tanss-werkzeuge)
 - [Lizenz](#lizenz)
 
 ---
@@ -739,6 +743,25 @@ gegen die echte Gegenstelle aus, der kein brauchbares Token erzeugt.
 Der Dienst startet automatisch mit und nimmt die Arbeit dort wieder auf, wo er aufgehört
 hat. Zuordnungen und Änderungsmarken liegen in der Zustandsdatenbank, ein Vollabgleich
 findet nicht statt.
+
+---
+
+## Weitere TANSS-Werkzeuge
+
+Aus demselben Haus, mit demselben Zuschnitt: quelloffen, und jedes spricht unmittelbar mit der
+eigenen TANSS-Instanz — ohne fremden Zwischendienst.
+
+- **[TANSS Log-Watcher](https://github.com/pronet-systems/tanss-log-watcher)** —
+  erkennt Fernwartungssitzungen (AnyDesk, TeamViewer, Remotedesktop, ScreenConnect und weitere)
+  am Windows-Arbeitsplatz und bucht sie als Fernwartung.
+- **[TANSS Git-Connector](https://github.com/pronet-systems/tanss-git-connector)** —
+  bucht Git-Commits per `post-commit`-Hook als Fernwartung. Linux, Windows, macOS.
+- **[TANSS Outlook Add-in](https://github.com/pronet-systems/tanss-outlook-addin)** —
+  legt E-Mails an Tickets ab, erzeugt Tickets aus E-Mails und pflegt zu einem Outlook-Termin
+  den TANSS-Einsatz.
+
+Dahinter steht die [ProNet Systems GmbH](https://www.pronet-systems.de), ein IT-Systemhaus aus
+Arnsberg.
 
 ---
 
