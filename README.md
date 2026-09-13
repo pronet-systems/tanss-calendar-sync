@@ -746,5 +746,10 @@ findet nicht statt.
 
 [MIT](LICENSE) — © 2026 ProNet Systems GmbH
 
-TANSS ist eine Marke der TANSS GmbH. Microsoft 365, Outlook und Microsoft Teams sind Marken
-der Microsoft Corporation. Dieses Projekt steht in keiner Verbindung zu diesen Unternehmen.
+TANSS ist ein Produkt der HUCK IT GmbH, Roßdorf (Amtsgericht Darmstadt, HRB 95700). Dieses
+Projekt ist ein unabhängiges Werkzeug, steht in keiner Verbindung zur HUCK IT GmbH und wird von
+ihr weder unterstützt noch geprüft. Marken gehören ihren jeweiligen Inhabern; die Nennung dient
+allein dazu, zu sagen, wofür dieses Werkzeug gemacht ist.
+
+Microsoft 365, Outlook und Microsoft Teams sind Marken der Microsoft Corporation; auch zu ihr
+besteht keine Verbindung.
