@@ -73,7 +73,7 @@ def find_adoption(source: Appointment, candidates: list[Appointment], *,
                   ) -> Adoption | None:
     """Sucht in Outlook ein Gegenstück zu einem noch ungekoppelten TANSS-Termin.
 
-    ``source`` muss bereits in der Outlook-Fassung vorliegen — der Betreffvergleich
+    ``source`` muss bereits in der Outlook-Schreibweise vorliegen — der Betreffvergleich
     läuft zwar ohne Firmensuffix, alles andere aber gegen den fertigen Stand.
 
     ``to_local`` rechnet in die Anzeigezeitzone um und entscheidet damit, was

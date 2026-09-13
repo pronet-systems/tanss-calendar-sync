@@ -1,4 +1,4 @@
-"""Terminserien — systemneutrale Fassung.
+"""Terminserien — systemneutrale Darstellung.
 
 TANSS speichert eine echte RFC-5545-RRULE, Graph ein strukturiertes Objekt. Die
 Umrechnung liegt in ``util/rrule.py``; hier steht nur das gemeinsame Modell.

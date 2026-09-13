@@ -216,7 +216,7 @@ class TanssRepository:
         return list(self.client.put(f"{TANSS_X_PREFIX}/tanssEvents/rules", {}) or [])
 
     def create_event_rule_raw(self, body: dict) -> int:
-        """Legt eine Regel aus einer gesicherten Fassung neu an.
+        """Legt eine Regel aus einer Sicherung neu an.
 
         Die Kennungen werden entfernt: ``id`` und die ``ruleId`` in den Unterobjekten
         vergibt der Server. Bliebe die alte Kennung stehen, schriebe man entweder in

@@ -1,4 +1,4 @@
-"""Konfigurationsmodelle — die Fassung aus Abschnitt 7 des Plans.
+"""Konfigurationsmodelle — der Stand aus Abschnitt 7 des Plans.
 
 Jeder Block hier hat dort eine Parametertabelle. Weicht etwas ab, gilt der Plan.
 """

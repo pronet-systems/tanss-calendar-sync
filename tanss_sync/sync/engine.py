@@ -178,7 +178,7 @@ class SyncEngine:
             appointment.employee_id = appointment.employee_id or user.tanss_employee_id
             appointment.mailbox = appointment.mailbox or user.mailbox
 
-        # Betreff VOR dem Vergleich in die Outlook-Fassung bringen. Danach waere es
+        # Betreff VOR dem Vergleich in die Outlook-Schreibweise bringen. Danach waere es
         # zu spaet: Der Reconciler haette dann den rohen TANSS-Titel gegen den bereits
         # mit "(Firma: ...)" versehenen Outlook-Titel gehalten - und jeden Termin fuer
         # geaendert gehalten.

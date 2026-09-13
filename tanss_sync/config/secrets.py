@@ -78,7 +78,7 @@ class SecretRef:
     # ---------------------------------------------------------------- schreiben
 
     def write(self, value: str) -> None:
-        """Legt einen neuen Wert ab — atomar, mit Vorgängerfassung als ``.bak``.
+        """Legt einen neuen Wert ab — atomar, mit Vorgängerversion als ``.bak``.
 
         Atomar heißt: in eine Nachbardatei schreiben, ``fsync``, dann umbenennen.
         Ein abgebrochener Schreibvorgang darf keine halbe Datei hinterlassen — sonst

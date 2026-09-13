@@ -143,16 +143,16 @@ def test_aenderung_in_outlook_wird_uebertragen() -> None:
 
 def test_konflikt_ohne_gewinner_outlook_schreibt_nicht() -> None:
     """Schrieben beide Richtungen, überschrieben sie sich bei jedem Lauf gegenseitig."""
-    pair = Pair(tanss=appointment(subject="TANSS-Fassung"),
-                graph=appointment(subject="Outlook-Fassung"),
+    pair = Pair(tanss=appointment(subject="TANSS-Betreff"),
+                graph=appointment(subject="Outlook-Betreff"),
                 link=link(tanss_hash="alt", graph_hash="alt"))
     changes = build(conflict_winner="tanss").reconcile_to_tanss([pair], user())
     assert changes.actions == []
 
 
 def test_konflikt_mit_gewinner_outlook_schreibt() -> None:
-    pair = Pair(tanss=appointment(subject="TANSS-Fassung"),
-                graph=appointment(subject="Outlook-Fassung"),
+    pair = Pair(tanss=appointment(subject="TANSS-Betreff"),
+                graph=appointment(subject="Outlook-Betreff"),
                 link=link(tanss_hash="alt", graph_hash="alt"))
     changes = build(conflict_winner="outlook").reconcile_to_tanss([pair], user())
     assert operations(changes) == [SyncOperation.UPDATE]

@@ -1,8 +1,8 @@
 """Ein- und Ausgabe des Einrichtungsassistenten.
 
 Bewusst von den Schritten getrennt: Die Schritte enthalten damit ausschließlich
-Fachlogik und lassen sich ohne Terminal prüfen — im Test tritt eine Fassung an diese
-Stelle, die vorbereitete Antworten liefert.
+Fachlogik und lassen sich ohne Terminal prüfen — im Test tritt ein Ersatz an diese
+Stelle, der vorbereitete Antworten liefert.
 """
 
 from __future__ import annotations

@@ -280,7 +280,7 @@ class Welt:
         # des Postfachs.
         # Offene Löschvormerkungen der Testtermine zuerst — danach sind ihre
         # Verknüpfungen weg und die Zuordnung über ``uid`` wäre nicht mehr möglich.
-        # Die frühere Fassung fragte ``uid IN (SELECT uid FROM links ...)`` ab und
+        # Die frühere Version fragte ``uid IN (SELECT uid FROM links ...)`` ab und
         # traf damit die Vormerkungen **aller** Termine des Postfachs, nicht nur die
         # des Prüfstands.
         uids = set()
